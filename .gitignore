@@ -67,3 +67,9 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+# Obsidian vault symlink (local only)
+notes
+
+# Claude Code local project settings
+.claude/
