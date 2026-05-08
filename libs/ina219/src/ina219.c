@@ -23,20 +23,18 @@ static bool read_reg(uint8_t reg, uint16_t *out) {
 // Battery percentage from LiPo discharge curve
 // ---------------------------------------------------------------------------
 
-// Piecewise-linear approximation of a typical 18650 LiPo discharge curve.
+// Piecewise-linear approximation of a typical 14500 Li-ion discharge curve.
 // Points are ordered highest voltage first.
 static const struct { float v; int pct; } lipo_curve[] = {
     { 4.20f, 100 },
-    { 4.06f,  90 },
-    { 3.98f,  80 },
-    { 3.92f,  70 },
-    { 3.87f,  60 },
-    { 3.82f,  50 },
-    { 3.79f,  40 },
-    { 3.75f,  30 },
-    { 3.71f,  20 },
-    { 3.67f,  10 },
-    { 3.27f,   5 },
+    { 4.05f,  90 },
+    { 3.95f,  80 },
+    { 3.85f,  70 },
+    { 3.75f,  55 },
+    { 3.65f,  40 },
+    { 3.55f,  25 },
+    { 3.40f,  10 },
+    { 3.20f,   5 },
     { 3.00f,   0 },
 };
 static const int LIPO_CURVE_LEN =
