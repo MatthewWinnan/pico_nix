@@ -36,7 +36,7 @@ pkgs.mkShell {
     git
 
     # PDF tools — lets Claude read datasheets via pdftotext / pdfinfo
-    poppler_utils
+    poppler-utils
   ];
 
   # nixpkgs pico-sdk installs to $out/lib/pico-sdk/, not $out/ directly.

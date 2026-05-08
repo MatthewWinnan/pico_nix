@@ -10,6 +10,11 @@ default:
 build-hello-world:
     cd projects/hello-world && just build
 
+# Build pico-w-ha-sensor and link compile_commands.json at repo root.
+build-pico-w-ha-sensor:
+    cd projects/pico-w-ha-sensor && just build
+    ln -sf projects/pico-w-ha-sensor/build/compile_commands.json compile_commands.json
+
 # Build bmp180-sensor and link compile_commands.json at repo root.
 # The root-level symlink lets clangd resolve headers for libs/bmp180/ — clangd
 # walks up the directory tree from the file being edited, so placing it here
@@ -51,6 +56,12 @@ fetch-datasheets:
     # Components
     curl -fL -o docs/datasheets/bmp180-datasheet.pdf \
         https://cdn-shop.adafruit.com/datasheets/BST-BMP180-DS000-09.pdf
+    # INA219 current/power monitor (used on Waveshare Pico-UPS-A)
+    curl -fL -o docs/datasheets/ina219-datasheet.pdf \
+        https://www.ti.com/lit/ds/symlink/ina219.pdf
+    # Waveshare Pico-UPS-A schematic
+    curl -fL -o docs/datasheets/pico-ups-a-schematic.pdf \
+        https://files.waveshare.com/upload/4/45/Pico-UPS-A_Schematic.pdf
     @echo "Datasheets saved to docs/datasheets/"
 
 # Download all docs (pinouts + datasheets)

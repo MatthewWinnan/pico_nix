@@ -1,0 +1,19 @@
+board     := "pico_w"
+build_dir := "build"
+
+default:
+    @just --list --unsorted
+
+# Configure and build, then symlink compile_commands.json for clangd
+build:
+    cmake -B {{build_dir}} -S . -DPICO_BOARD={{board}} -G Ninja
+    ninja -C {{build_dir}}
+    ln -sf {{build_dir}}/compile_commands.json compile_commands.json
+
+# Build without reconfiguring (faster after first build)
+rebuild:
+    ninja -C {{build_dir}}
+
+# Remove the build directory and compile_commands symlink
+clean:
+    rm -rf {{build_dir}} compile_commands.json

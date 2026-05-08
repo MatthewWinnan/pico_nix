@@ -40,8 +40,9 @@
         # --- Project firmware packages ---
         # nix build .#<name>  →  result/ contains .uf2, .elf, .bin
         packages = {
-          hello-world   = mkProject ./projects/hello-world/package.nix;
-          bmp180-sensor = mkProject ./projects/bmp180-sensor/package.nix;
+          hello-world        = mkProject ./projects/hello-world/package.nix;
+          bmp180-sensor      = mkProject ./projects/bmp180-sensor/package.nix;
+          pico-w-ha-sensor   = mkProject ./projects/pico-w-ha-sensor/package.nix;
         };
       }
     );

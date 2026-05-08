@@ -18,8 +18,6 @@ i2c_config.h defines I2C port, pins, and the init function.
 #define BMP_180_CHIP_ID_ADDR    _u(0xD0)        // BMP180_DOC_18
 #define BMP_180_CHIP_ID         _u(0x55)        // BMP180_DOC_18
 #define BMP_180_ADDR            _u(0xEE >> 1)   // BMP180_DOC_20: 7-bit address
-#define BMP_180_SEA_PRESSURE    _u(101325)      // Standard sea-level pressure in Pa
-#define BMP_180_CENTURION_HEIGHT _u(1453)       // Centurion, ZA height above sea level (m)
 
 // Debug / info verbosity (0 = off, 1 = on)
 #define BMP_180_DEBUG_MODE  0

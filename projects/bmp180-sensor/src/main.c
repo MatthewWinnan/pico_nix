@@ -5,11 +5,11 @@
 
 // Standard sea-level pressure (Pa). Adjust if your local met service
 // provides a more accurate reference for your area.
-#define MY_SEA_LEVEL_PA   101325.0f
+#define MY_SEA_LEVEL_PA   102100.0f
 
 // Height of the sensor above sea level in metres. Set this to your
 // location's elevation so sea-level pressure is calculated correctly.
-#define MY_STATION_ALT_M  0.0f
+#define MY_STATION_ALT_M  1457.8f
 
 int main(void) {
     stdio_init_all();
