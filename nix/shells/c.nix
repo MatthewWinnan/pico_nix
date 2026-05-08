@@ -34,6 +34,9 @@ pkgs.mkShell {
     usbutils  # lsusb — identify which /dev/ttyACM* is the UART bridge
 
     git
+
+    # PDF tools — lets Claude read datasheets via pdftotext / pdfinfo
+    poppler_utils
   ];
 
   # nixpkgs pico-sdk installs to $out/lib/pico-sdk/, not $out/ directly.

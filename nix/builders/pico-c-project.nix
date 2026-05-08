@@ -19,6 +19,7 @@
 , board ? "pico"
 , extraCmakeFlags ? []
 , extraBuildInputs ? []
+, cmakeDir ? null   # set when project lives in a subdirectory of src (e.g. mono-repo builds)
 , meta ? {}
 }:
 
@@ -32,7 +33,7 @@ let
     else "${pico-sdk}/lib/pico-sdk/cmake/preload/toolchains/pico_arm_cortex_m0plus_gcc.cmake";
 in
 
-pkgs.stdenv.mkDerivation {
+pkgs.stdenv.mkDerivation ({
   pname = name;
   version = "0.1.0";
   inherit src;
@@ -87,4 +88,4 @@ pkgs.stdenv.mkDerivation {
   '';
 
   inherit meta;
-}
+} // (if cmakeDir != null then { inherit cmakeDir; } else {}))
