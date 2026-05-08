@@ -11,8 +11,14 @@
       let
         pkgs = nixpkgs.legacyPackages.${system};
 
+        # nixpkgs ships pico-sdk without submodules to keep closure size down (~1.6 GiB).
+        # Submodules (TinyUSB, etc.) are needed for USB stdio and other features.
+        pico-sdk = pkgs.pico-sdk.override { withSubmodules = true; };
+
         # Reusable builder function, passed to each project's package.nix
-        buildPicoProject = pkgs.callPackage ./nix/builders/pico-c-project.nix { inherit pkgs; };
+        buildPicoProject = pkgs.callPackage ./nix/builders/pico-c-project.nix {
+          inherit pkgs pico-sdk;
+        };
 
         # Helper: load a project's package.nix and pass it the builder
         mkProject = path:
@@ -24,21 +30,18 @@
         # nix develop .#c          → C/C++ Pico SDK environment
         # nix develop .#micropython → MicroPython environment
         devShells = {
-          c           = pkgs.callPackage ./nix/shells/c.nix { inherit pkgs; };
+          c           = pkgs.callPackage ./nix/shells/c.nix { inherit pkgs pico-sdk; };
           micropython = pkgs.callPackage ./nix/shells/micropython.nix { inherit pkgs; };
 
           # Default drops you into the C shell
-          default = pkgs.callPackage ./nix/shells/c.nix { inherit pkgs; };
+          default = pkgs.callPackage ./nix/shells/c.nix { inherit pkgs pico-sdk; };
         };
 
         # --- Project firmware packages ---
-        # Add entries here as projects are created:
-        # nix build .#my-sensor
-        #
-        # packages = {
-        #   my-sensor = mkProject ./projects/my-sensor/package.nix;
-        # };
-        packages = {};
+        # nix build .#<name>  →  result/ contains .uf2, .elf, .bin
+        packages = {
+          hello-world = mkProject ./projects/hello-world/package.nix;
+        };
       }
     );
 }

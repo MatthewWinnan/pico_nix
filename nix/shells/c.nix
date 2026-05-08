@@ -1,4 +1,5 @@
-{ pkgs }:
+# pico-sdk is passed from the flake with withSubmodules = true (includes TinyUSB).
+{ pkgs, pico-sdk }:
 
 pkgs.mkShell {
   name = "pico-c";
@@ -7,7 +8,7 @@ pkgs.mkShell {
     # Cross-compilation toolchain for ARM Cortex-M
     gcc-arm-embedded
 
-    # Pico SDK — sets PICO_SDK_PATH via setup hook
+    # Pico SDK (with submodules: TinyUSB, etc.)
     pico-sdk
 
     # Build system
@@ -35,9 +36,9 @@ pkgs.mkShell {
     git
   ];
 
-  # pico-sdk's setup hook sets PICO_SDK_PATH automatically.
-  # PICO_TOOLCHAIN_PATH tells cmake where the ARM gcc lives.
+  # nixpkgs pico-sdk installs to $out/lib/pico-sdk/, not $out/ directly.
   shellHook = ''
+    export PICO_SDK_PATH="${pico-sdk}/lib/pico-sdk"
     export PICO_TOOLCHAIN_PATH="${pkgs.gcc-arm-embedded}"
     echo "Pico C/C++ dev shell"
     echo "  SDK:       $PICO_SDK_PATH"

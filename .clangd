@@ -1,0 +1,12 @@
+CompileFlags:
+  # Remove flags clangd doesn't understand from the ARM gcc toolchain.
+  # These are valid arm-none-eabi-gcc flags but confuse clangd's x86 clang backend.
+  Remove:
+    - -masm-syntax-unified
+    - --specs=*
+    - -mcpu=cortex-m0plus   # clangd understands this but some versions don't; add back if needed
+
+Diagnostics:
+  # Suppress false positives from pico-sdk headers that use gcc-specific extensions
+  Suppress:
+    - drv_unknown_argument

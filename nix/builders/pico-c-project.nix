@@ -11,7 +11,8 @@
 #     extraBuildInputs = [];
 #   }
 
-{ pkgs }:
+# pico-sdk is passed from the flake with withSubmodules = true (includes TinyUSB).
+{ pkgs, pico-sdk }:
 
 { name
 , src
@@ -35,19 +36,18 @@ pkgs.stdenv.mkDerivation {
   ];
 
   buildInputs = [
-    pkgs.pico-sdk
+    pico-sdk
   ] ++ extraBuildInputs;
 
   cmakeFlags = [
     "-DPICO_BOARD=${board}"
     "-DCMAKE_BUILD_TYPE=Release"
-    # Point cmake at the ARM toolchain
     "-DPICO_TOOLCHAIN_PATH=${pkgs.gcc-arm-embedded}"
   ] ++ extraCmakeFlags;
 
-  # pico-sdk setup hook sets PICO_SDK_PATH; cmake picks it up via
-  # pico_sdk_import.cmake which the SDK ships.
+  # nixpkgs pico-sdk installs to $out/lib/pico-sdk/ — set both paths explicitly.
   preConfigure = ''
+    export PICO_SDK_PATH="${pico-sdk}/lib/pico-sdk"
     export PICO_TOOLCHAIN_PATH="${pkgs.gcc-arm-embedded}"
   '';
 

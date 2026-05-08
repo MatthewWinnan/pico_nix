@@ -7,6 +7,9 @@ pkgs.mkShell {
     # Primary tool for interacting with MicroPython devices over serial
     mpremote
 
+    # Flash MicroPython firmware images to ESP32 / ESP8266 (or erase flash)
+    esptool
+
     # Alternative tools
     rshell
     mpy-utils
