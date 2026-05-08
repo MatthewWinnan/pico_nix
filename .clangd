@@ -1,12 +1,20 @@
 CompileFlags:
+  # Tell clangd to treat all files as ARM bare-metal, matching the cross-compiler.
+  # Without this, clangd may fall back to host (x86) include paths.
+  Add:
+    - --target=arm-none-eabi
+
   # Remove flags clangd doesn't understand from the ARM gcc toolchain.
-  # These are valid arm-none-eabi-gcc flags but confuse clangd's x86 clang backend.
   Remove:
     - -masm-syntax-unified
     - --specs=*
-    - -mcpu=cortex-m0plus   # clangd understands this but some versions don't; add back if needed
+    - -mcpu=cortex-m0plus
 
 Diagnostics:
-  # Suppress false positives from pico-sdk headers that use gcc-specific extensions
   Suppress:
+    # arm-none-eabi-gcc flags clangd doesn't recognise
     - drv_unknown_argument
+    # gnu/stubs-32.h is a glibc 32-bit x86 stub — never needed for ARM bare-metal.
+    # Appears when clangd accidentally follows a host include path. Suppress it;
+    # the real fix is --query-driver in your clangd server args (see README).
+    - pp_file_not_found
