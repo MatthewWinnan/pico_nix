@@ -203,7 +203,7 @@ int main(void) {
         sensor_state_t state = {
             .bmp180_temp_c          = temp_c,
             .bmp180_pressure_pa     = pressure_pa,
-            .bmp180_pressure_msl_pa = mqtt.qnh_ref_pa,
+            .bmp180_pressure_msl_pa = pressure_msl_pa,  // direct per-cycle calc; qnh_ref_pa is EMA reference for altitude only
             .bmp180_altitude_m      = altitude_m,
             .bme280_temp_c          = bme_temp_c,
             .bme280_pressure_pa     = bme_press_pa,

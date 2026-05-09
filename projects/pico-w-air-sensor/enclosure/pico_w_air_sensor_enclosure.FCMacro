@@ -1,0 +1,233 @@
+"""
+pico_w_air_sensor_enclosure.FCMacro
+====================================
+FreeCAD 0.21+ Python macro.
+Run via:  Macro menu → Macros → select this file → Execute
+
+Generates two Part objects in a new document:
+  Body  — hollow shell with hex grilles (left/right sides), SSD1306 display
+          window (front), USB-C cutout (rear), 4 internal PCB mounting bosses.
+  Lid   — flat top plate with a downward press-fit engagement flange.
+
+Coordinate convention
+  X  length  (front=0 → back=EXT_L)
+  Y  width   (left=0  → right=EXT_W)   ← grille faces
+  Z  height  (floor=0 → top=EXT_H)
+
+All dimensions in mm.
+"""
+
+import FreeCAD as App
+import Part
+import math
+
+
+# ─── Parameters ────────────────────────────────────────────────────────────────
+
+WALL            = 2.5    # shell wall thickness
+
+# External envelope
+EXT_L           = 115.0  # length X  (front → back)
+EXT_W           = 70.0   # width  Y  (left → right)
+EXT_H           = 50.0   # height Z
+
+# Lid
+LID_H           = 8.0    # total lid height (plate only — sits on top of body)
+LID_FLANGE_H    = 4.0    # downward flange depth (slides inside body rim)
+LID_CLEARANCE   = 0.25   # press-fit radial clearance each side
+BODY_H          = EXT_H - LID_H          # open body height = 42 mm
+
+# SSD1306 display window — front face (X = 0)
+DISP_W          = 30.0   # window width  (Y direction)
+DISP_H          = 13.0   # window height (Z direction)
+DISP_Y          = EXT_W / 2              # centred on front face
+DISP_Z          = BODY_H * 0.62         # upper-centre of body
+
+# USB-C cutout — rear face (X = EXT_L)
+USB_W           = 10.5   # cutout width  (Y)
+USB_H           = 4.0    # cutout height (Z)
+USB_Y           = EXT_W / 2
+USB_Z           = WALL + 5.0
+
+# Hex grille — left (Y=0) and right (Y=EXT_W) faces
+# Flat-top orientation: flat edge at top/bottom of each hexagon.
+HEX_R           = 2.5    # circumradius (centre → vertex)
+HEX_GAP         = 1.5    # minimum gap between adjacent hex edges
+GRILLE_BORDER   = 5.0    # keep-out border around each grille panel
+
+# PCB mounting bosses — 4 internal floor corners
+BOSS_R_OUTER    = 3.5
+BOSS_R_INNER    = 1.1    # M2 self-tap pilot hole
+BOSS_H          = 6.0    # height from floor
+BOSS_OFFSET     = 9.0    # distance from inner wall face to boss centre
+
+
+# ─── Helper: single hexagonal face in the XZ plane (Y = 0) ────────────────────
+
+def hex_face_xz(cx, cz, R):
+    """
+    Return a Part.Face for a flat-top hexagon centred at (cx, 0, cz).
+    Flat-top: angle = i * pi/3, so flat edges at top and bottom (Z axis).
+    """
+    pts = [
+        App.Vector(cx + R * math.cos(i * math.pi / 3),
+                   0,
+                   cz + R * math.sin(i * math.pi / 3))
+        for i in range(6)
+    ]
+    pts.append(pts[0])
+    return Part.Face(Part.makePolygon(pts))
+
+
+# ─── Helper: hex grille compound for one wall ──────────────────────────────────
+
+def hex_grille_compound(y_start, depth, x_min, x_max, z_min, z_max, R, gap):
+    """
+    Return a Part.Compound of hex prisms ready for boolean subtraction.
+
+    The hex array lies in the XZ plane, translated to Y = y_start, then
+    extruded by `depth` in the +Y direction.
+
+    Flat-top grid layout:
+      horizontal step X  =  2R + gap      (point-to-point + gap)
+      vertical   step Z  =  R*sqrt(3) + gap     (flat-to-flat + gap)
+      odd rows offset X  =  (2R + gap) / 2
+    """
+    x_step = 2.0 * R + gap
+    z_step = R * math.sqrt(3) + gap
+
+    shapes = []
+    row = 0
+    z   = z_min + R + gap
+
+    while z + R <= z_max - gap:
+        x_off = (x_step / 2.0) if (row % 2 == 1) else 0.0
+        x = x_min + R + gap + x_off
+
+        while x + R <= x_max - gap:
+            face  = hex_face_xz(x, z, R)
+            face.translate(App.Vector(0, y_start, 0))
+            prism = face.extrude(App.Vector(0, depth, 0))
+            shapes.append(prism)
+            x += x_step
+
+        z   += z_step
+        row += 1
+
+    if not shapes:
+        return None
+    return Part.makeCompound(shapes)
+
+
+# ─── Build body ────────────────────────────────────────────────────────────────
+
+# Hollow shell: outer box minus inner box (open top, closed bottom + 4 sides)
+outer = Part.makeBox(EXT_L, EXT_W, BODY_H)
+inner = Part.makeBox(EXT_L - 2*WALL, EXT_W - 2*WALL, BODY_H - WALL)
+inner.translate(App.Vector(WALL, WALL, WALL))
+body = outer.cut(inner)
+
+# — SSD1306 display window (front face, X = 0) —————————————————————————————————
+disp_cut = Part.makeBox(WALL + 2, DISP_W, DISP_H)
+disp_cut.translate(App.Vector(-1,
+                               DISP_Y - DISP_W / 2,
+                               DISP_Z - DISP_H / 2))
+body = body.cut(disp_cut)
+
+# — USB-C cutout (rear face, X = EXT_L) ————————————————————————————————————————
+usb_cut = Part.makeBox(WALL + 2, USB_W, USB_H)
+usb_cut.translate(App.Vector(EXT_L - WALL - 1,
+                              USB_Y - USB_W / 2,
+                              USB_Z))
+body = body.cut(usb_cut)
+
+# — Left grille (Y = 0, cut inward through wall) ———————————————————————————————
+lg = hex_grille_compound(
+    y_start = -1,
+    depth   = WALL + 2,
+    x_min   = GRILLE_BORDER,
+    x_max   = EXT_L - GRILLE_BORDER,
+    z_min   = GRILLE_BORDER,
+    z_max   = BODY_H - GRILLE_BORDER,
+    R       = HEX_R,
+    gap     = HEX_GAP,
+)
+if lg:
+    body = body.cut(lg)
+
+# — Right grille (Y = EXT_W, cut inward through wall) —————————————————————————
+rg = hex_grille_compound(
+    y_start = EXT_W - WALL - 1,
+    depth   = WALL + 2,
+    x_min   = GRILLE_BORDER,
+    x_max   = EXT_L - GRILLE_BORDER,
+    z_min   = GRILLE_BORDER,
+    z_max   = BODY_H - GRILLE_BORDER,
+    R       = HEX_R,
+    gap     = HEX_GAP,
+)
+if rg:
+    body = body.cut(rg)
+
+# — Internal PCB mounting bosses (4 floor corners) —————————————————————————————
+boss_positions = [
+    (WALL + BOSS_OFFSET,          WALL + BOSS_OFFSET),
+    (EXT_L - WALL - BOSS_OFFSET,  WALL + BOSS_OFFSET),
+    (WALL + BOSS_OFFSET,          EXT_W - WALL - BOSS_OFFSET),
+    (EXT_L - WALL - BOSS_OFFSET,  EXT_W - WALL - BOSS_OFFSET),
+]
+for bx, by in boss_positions:
+    outer_cyl = Part.makeCylinder(BOSS_R_OUTER, BOSS_H,
+                                   App.Vector(bx, by, WALL),
+                                   App.Vector(0, 0, 1))
+    inner_cyl = Part.makeCylinder(BOSS_R_INNER, BOSS_H,
+                                   App.Vector(bx, by, WALL),
+                                   App.Vector(0, 0, 1))
+    body = body.fuse(outer_cyl.cut(inner_cyl))
+
+
+# ─── Build lid ─────────────────────────────────────────────────────────────────
+
+# Flat top plate
+lid = Part.makeBox(EXT_L, EXT_W, WALL)
+
+# Downward engagement flange (press-fits inside body opening)
+c = WALL + LID_CLEARANCE
+flange = Part.makeBox(EXT_L - 2*c, EXT_W - 2*c, LID_FLANGE_H)
+flange.translate(App.Vector(c, c, -LID_FLANGE_H))
+lid = lid.fuse(flange)
+
+# Float lid above body for presentation
+lid.translate(App.Vector(0, 0, BODY_H + 6))
+
+
+# ─── Add to document ───────────────────────────────────────────────────────────
+
+doc = App.newDocument("pico_w_air_sensor_enclosure")
+
+body_obj            = doc.addObject("Part::Feature", "Body")
+body_obj.Shape      = body
+body_obj.ViewObject.ShapeColor = (0.94, 0.94, 0.94)
+
+lid_obj             = doc.addObject("Part::Feature", "Lid")
+lid_obj.Shape       = lid
+lid_obj.ViewObject.ShapeColor  = (0.80, 0.80, 0.85)
+
+doc.recompute()
+
+try:
+    import FreeCADGui as Gui
+    Gui.activeDocument().activeView().viewIsometric()
+    Gui.SendMsgToActiveView("ViewFit")
+except Exception:
+    pass
+
+print("=" * 60)
+print("pico_w_air_sensor_enclosure — generated successfully")
+print(f"  Body : {EXT_L:.0f} x {EXT_W:.0f} x {BODY_H:.0f} mm")
+print(f"  Lid  : {EXT_L:.0f} x {EXT_W:.0f} x {WALL:.1f} mm plate "
+      f"+ {LID_FLANGE_H:.0f} mm flange")
+print(f"  Hex  : R={HEX_R} mm, gap={HEX_GAP} mm, flat-top orientation")
+print(f"  Wall : {WALL} mm")
+print("=" * 60)
+print("Adjust parameters at the top of the file then re-run to update.")
