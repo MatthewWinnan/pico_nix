@@ -16,10 +16,24 @@ add_subdirectory(../../libs/ssd1306 ssd1306)
 
 add_executable(pico_w_air_sensor
     src/main.c
+    src/provisioning.c
+    src/mqtt_ha.c
+)
+
+# Project root contains lwipopts.h — must be on the include path so
+# that pico_lwip_mqtt can find it when building the lwIP MQTT app layer.
+target_include_directories(pico_w_air_sensor PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
 target_link_libraries(pico_w_air_sensor
     pico_stdlib
+    pico_cyw43_arch_lwip_threadsafe_background
+    pico_lwip_mqtt
+    hardware_flash
+    hardware_sync
+    hardware_watchdog
     pmsa003
     ssd1306
 )
