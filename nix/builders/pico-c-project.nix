@@ -19,7 +19,11 @@
 , board ? "pico"
 , extraCmakeFlags ? []
 , extraBuildInputs ? []
-, cmakeDir ? null   # set when project lives in a subdirectory of src (e.g. mono-repo builds)
+# Path to the project's CMakeLists.txt, relative to the cmake build dir.
+# The cmake setup hook cds into a build/ subdirectory before invoking cmake,
+# so mono-repo projects must use "../projects/<name>" to step back to the
+# source root. Example: cmakeDir = "../projects/my-sensor"
+, cmakeDir ? null
 , meta ? {}
 }:
 

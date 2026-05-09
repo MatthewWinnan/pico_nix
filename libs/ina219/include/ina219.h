@@ -17,14 +17,7 @@
  */
 
 #include <stdbool.h>
-#include "pico/stdlib.h"
-#include "hardware/i2c.h"
-
-// I2C bus configuration
-#define INA219_I2C_PORT  i2c1
-#define INA219_SDA_PIN   6
-#define INA219_SCL_PIN   7
-#define INA219_I2C_BAUD  400000
+#include "ina219_i2c.h"
 
 // I2C address — confirmed 0x43 via bus scan (A0=VCC, A1=GND on Pico-UPS-A)
 #define INA219_ADDR      0x43

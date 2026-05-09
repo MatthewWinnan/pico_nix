@@ -41,14 +41,19 @@ void bmp180_init(struct bmp180_model *my_chip,
     // BMP180 needs ~10 ms to start; 1 s is conservative but reliable.
     sleep_ms(1000);
 
-    uint8_t chipID[1];
+    uint8_t chipID[1] = {0};
     uint8_t addr = BMP_180_CHIP_ID_ADDR;
-    bmp180_i2c_read(BMP_180_ADDR, &addr, chipID, 1, false);
+    int rc = bmp180_i2c_read(BMP_180_ADDR, &addr, chipID, 1, false);
 
-    if (chipID[0] != BMP_180_CHIP_ID) {
+    if (rc == PICO_ERROR_GENERIC || chipID[0] != BMP_180_CHIP_ID) {
         while (true) {
-            printf("BMP180 not found (got 0x%02X, expected 0x%02X)\r\n",
-                   chipID[0], BMP_180_CHIP_ID);
+            if (rc == PICO_ERROR_GENERIC) {
+                printf("BMP180 not found: I2C NACK at addr 0x%02X (not connected?)\r\n",
+                       BMP_180_ADDR);
+            } else {
+                printf("BMP180 not found: wrong chip ID (got 0x%02X, expected 0x%02X)\r\n",
+                       chipID[0], BMP_180_CHIP_ID);
+            }
             sleep_ms(5000);
         }
     }

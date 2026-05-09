@@ -6,6 +6,7 @@
 #include "hardware/i2c.h"
 
 #include "bmp180.h"
+#include "bme280.h"
 #include "ina219.h"
 #include "provisioning.h"
 #include "mqtt_ha.h"
@@ -16,6 +17,11 @@
 
 // Sensor measurement interval in milliseconds
 #define MEASURE_INTERVAL_MS  10000
+
+// EMA smoothing factor for QNH (sea-level pressure).
+// α=0.05 → ~20-sample window (~3 min at 10 s interval) — very smooth.
+// α=0.20 → ~5-sample window  (~50 s) — tracks fronts faster, less GPS jitter.
+#define QNH_EMA_ALPHA  0.2f
 
 // ---------------------------------------------------------------------------
 // WiFi connect with retry (Pico W / CYW43)
@@ -61,6 +67,10 @@ int main(void) {
         while (true) tight_loop_contents();
     }
     cyw43_arch_enable_sta_mode();
+    // Enable CYW43 power-save mode: chip sleeps between beacon intervals
+    // (~100 ms), significantly reducing idle WiFi draw while keeping the
+    // MQTT connection and GPS subscription alive.
+    cyw43_wifi_pm(&cyw43_state, CYW43_DEFAULT_PM);
 
     if (!wifi_connect(creds.wifi_ssid, creds.wifi_pass)) {
         printf("Clearing credentials and rebooting for re-provisioning.\r\n");
@@ -81,6 +91,15 @@ int main(void) {
     global_i2c_init();
     bmp180_init(&sensor, &params, &measures);
     printf("BMP180 ready (chip ID: 0x%02X).\r\n", sensor.chipID);
+
+    // ── BME280 (I2C0, GP4/GP5, addr 0x76) ───────────────────────────────────
+    struct bme280_calib_param    bme_params;
+    struct bme280_settings       bme_settings;
+    struct bme280_measurements   bme_meas;
+    struct bme280_model          bme_sensor;
+
+    bme280_init(&bme_sensor, &bme_params, &bme_settings, &bme_meas);
+    printf("BME280 ready (chip ID: 0x%02X).\r\n", bme_sensor.chipID);
 
     // ── INA219 (I2C1, GP6/GP7) ───────────────────────────────────────────────
     ina219_init();
@@ -107,6 +126,12 @@ int main(void) {
 
     // ── Sensor loop ──────────────────────────────────────────────────────────
     while (true) {
+        // Trigger BME280 forced-mode conversion immediately — it will finish
+        // in ~40 ms and sleep automatically, ready to read after the BMP180
+        // measurement and the 10 s interval sleep.
+        bme_sensor.settings->mode = 0b01;
+        bme280_start_measurements(&bme_sensor);
+
         bmp180_get_measurement(&sensor);
 
         float temp_c      = (float)sensor.measurement_params->T / 10.0f;
@@ -127,13 +152,43 @@ int main(void) {
         // α = 0.05 → equivalent to a ~20-sample running average (~3 min window).
         // qnh_ref_pa lives only in main context so no locking is needed.
         if (gps_valid) {
-            const float alpha = 0.05f;
-            mqtt.qnh_ref_pa = alpha * pressure_msl_pa + (1.0f - alpha) * mqtt.qnh_ref_pa;
+            mqtt.qnh_ref_pa = QNH_EMA_ALPHA * pressure_msl_pa + (1.0f - QNH_EMA_ALPHA) * mqtt.qnh_ref_pa;
         }
 
         // Barometric altitude from the calibrated QNH reference.
         bmp180_compute_altitude(&sensor, mqtt.qnh_ref_pa);
         float altitude_m = sensor.measurement_params->altitude;
+
+        printf("BMP180: T=%5.1f C  P=%6.2f hPa  QNH=%6.2f hPa  Alt=%6.1f m %s\r\n",
+               temp_c,
+               pressure_pa     / 100.0f,
+               pressure_msl_pa / 100.0f,
+               altitude_m,
+               gps_valid ? "" : "  [GPS fallback]");
+
+        // ── BME280 ───────────────────────────────────────────────────────────
+        // Conversion was triggered before the sleep — it finished ~40 ms in,
+        // so this read is instant (no blocking poll needed).
+        if (bme280_get_uncompensated_measurements(&bme_sensor) != BME280_OK) {
+            printf("BME280: measurement read failed (still busy?)\r\n");
+        }
+        bme280_compensate_temp(&bme_sensor);
+        bme280_compensate_press(&bme_sensor);
+        bme280_compensate_hum(&bme_sensor);
+        bme_sensor.settings->mode = 0b00;
+
+        float bme_temp_c       = (float)bme_sensor.measure->T / 100.0f;
+        float bme_press_pa     = (float)bme_sensor.measure->P / 256.0f;
+        float bme_press_msl_pa = bme_press_pa / powf(1.0f - (station_alt / 44330.0f), 5.255f);
+        float bme_altitude_m   = 44330.0f * (1.0f - powf(bme_press_pa / mqtt.qnh_ref_pa, 1.0f / 5.255f));
+        float bme_hum_pct      = (float)bme_sensor.measure->H / 1024.0f;
+
+        printf("BME280: T=%5.1f C  P=%6.2f hPa  QNH=%6.2f hPa  Alt=%6.1f m  H=%5.1f %%RH\r\n",
+               bme_temp_c,
+               bme_press_pa     / 100.0f,
+               bme_press_msl_pa / 100.0f,
+               bme_altitude_m,
+               bme_hum_pct);
 
         // ── INA219 ───────────────────────────────────────────────────────────
         ina219_reading_t ups = {0};
@@ -142,23 +197,22 @@ int main(void) {
             printf("INA219 read failed.\r\n");
         }
 
-        printf("T=%5.1f C  P=%6.2f hPa  QNH=%6.2f hPa  Alt=%6.1f m  "
-               "Bat=%3d%%  %.2fV  %.0fmA%s\r\n",
-               temp_c,
-               pressure_pa     / 100.0f,
-               pressure_msl_pa / 100.0f,
-               altitude_m,
-               ups.percent, ups.voltage_v, ups.current_ma,
-               gps_valid ? "" : "  [GPS fallback]");
+        printf("INA219: Bat=%3d%%  %.2fV  %.0fmA\r\n",
+               ups.percent, ups.voltage_v, ups.current_ma);
 
         sensor_state_t state = {
-            .temp_c         = temp_c,
-            .pressure_pa    = pressure_pa,
-            .pressure_msl_pa = pressure_msl_pa,
-            .altitude_m     = altitude_m,
-            .battery_pct    = ups_ok ? ups.percent    : -1,
-            .voltage_v      = ups_ok ? ups.voltage_v  : 0.0f,
-            .current_ma     = ups_ok ? ups.current_ma : 0.0f,
+            .bmp180_temp_c          = temp_c,
+            .bmp180_pressure_pa     = pressure_pa,
+            .bmp180_pressure_msl_pa = mqtt.qnh_ref_pa,
+            .bmp180_altitude_m      = altitude_m,
+            .bme280_temp_c          = bme_temp_c,
+            .bme280_pressure_pa     = bme_press_pa,
+            .bme280_pressure_msl_pa = bme_press_msl_pa,
+            .bme280_altitude_m      = bme_altitude_m,
+            .bme280_humidity_pct    = bme_hum_pct,
+            .battery_pct         = ups_ok ? ups.percent    : -1,
+            .voltage_v           = ups_ok ? ups.voltage_v  : 0.0f,
+            .current_ma          = ups_ok ? ups.current_ma : 0.0f,
         };
         mqtt_ha_publish_state(&mqtt, &state);
 

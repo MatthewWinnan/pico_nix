@@ -119,7 +119,7 @@ bool mqtt_ha_connect(mqtt_ha_t *ctx, const char *host, uint16_t port) {
     }
 
     struct mqtt_connect_client_info_t ci = {
-        .client_id   = "pico_bmp180",
+        .client_id   = "pico_weather_aux",
         .client_user = NULL,
         .client_pass = NULL,
         .keep_alive  = 60,
@@ -173,7 +173,7 @@ static void publish_discovery(mqtt_ha_t *ctx,
                  "\"device_class\":\"%s\",", device_class);
     }
 
-    char payload[512];
+    char payload[768];
     snprintf(payload, sizeof(payload),
              "{"
              "\"name\":\"%s\","
@@ -187,10 +187,10 @@ static void publish_discovery(mqtt_ha_t *ctx,
              "\"payload_available\":\"online\","
              "\"payload_not_available\":\"offline\","
              "\"device\":{"
-               "\"identifiers\":[\"bmp180_pico_w\"],"
-               "\"name\":\"BMP180 Weather Station\","
-               "\"model\":\"BMP180\","
-               "\"manufacturer\":\"Bosch\""
+               "\"identifiers\":[\"pico_weather_aux\"],"
+               "\"name\":\"Pico W Aux Weather Station\","
+               "\"model\":\"BMP180 + BME280 + INA219\","
+               "\"manufacturer\":\"Bosch / Texas Instruments\""
              "}"
              "}",
              name, dc_field, object_id, MQTT_STATE_TOPIC, unit,
@@ -204,40 +204,81 @@ static void publish_discovery(mqtt_ha_t *ctx,
 }
 
 void mqtt_ha_publish_discovery(mqtt_ha_t *ctx) {
+    // ── BMP180 ────────────────────────────────────────────────────────────────
     publish_discovery(ctx,
         "bmp180_temperature",
-        "Temperature",
+        "BMP180 Temperature",
         "temperature",
         "\xC2\xB0" "C",  // °C — split so \xB0 doesn't consume 'C' as a hex digit
-        "temperature");
-    sleep_ms(200);  // let the ring buffer drain before queuing the next payload
+        "bmp180_temperature");
+    sleep_ms(200);
 
     publish_discovery(ctx,
         "bmp180_pressure",
-        "Pressure (QFE)",
+        "BMP180 Pressure (QFE)",
         "atmospheric_pressure",
         "hPa",
-        "pressure");
+        "bmp180_pressure");
     sleep_ms(200);
 
     publish_discovery(ctx,
         "bmp180_pressure_msl",
-        "Pressure MSL (QNH)",
+        "BMP180 Pressure MSL (QNH)",
         "atmospheric_pressure",
         "hPa",
-        "pressure_msl");
+        "bmp180_pressure_msl");
     sleep_ms(200);
 
-    // HA has no "altitude" device_class — omit it so HA accepts the config.
     publish_discovery(ctx,
         "bmp180_altitude",
-        "Altitude (barometric)",
+        "BMP180 Altitude",
         NULL,
         "m",
-        "altitude");
+        "bmp180_altitude");
     sleep_ms(200);
 
-    // INA219 / Pico-UPS-A
+    // ── BME280 ────────────────────────────────────────────────────────────────
+    publish_discovery(ctx,
+        "bme280_temperature",
+        "BME280 Temperature",
+        "temperature",
+        "\xC2\xB0" "C",
+        "bme280_temperature");
+    sleep_ms(200);
+
+    publish_discovery(ctx,
+        "bme280_pressure",
+        "BME280 Pressure (QFE)",
+        "atmospheric_pressure",
+        "hPa",
+        "bme280_pressure");
+    sleep_ms(200);
+
+    publish_discovery(ctx,
+        "bme280_pressure_msl",
+        "BME280 Pressure MSL (QNH)",
+        "atmospheric_pressure",
+        "hPa",
+        "bme280_pressure_msl");
+    sleep_ms(200);
+
+    publish_discovery(ctx,
+        "bme280_altitude",
+        "BME280 Altitude",
+        NULL,
+        "m",
+        "bme280_altitude");
+    sleep_ms(200);
+
+    publish_discovery(ctx,
+        "bme280_humidity",
+        "BME280 Humidity",
+        "humidity",
+        "%",
+        "bme280_humidity");
+    sleep_ms(200);
+
+    // ── INA219 / Pico-UPS-A ───────────────────────────────────────────────────
     publish_discovery(ctx,
         "pico_w_battery",
         "Battery",
@@ -272,16 +313,27 @@ void mqtt_ha_subscribe_gps(mqtt_ha_t *ctx) {
 }
 
 void mqtt_ha_publish_state(mqtt_ha_t *ctx, const sensor_state_t *s) {
-    char payload[256];
+    char payload[512];
     snprintf(payload, sizeof(payload),
-             "{\"temperature\":%.1f"
-             ",\"pressure\":%.2f,\"pressure_msl\":%.2f"
-             ",\"altitude\":%.1f"
-             ",\"battery\":%d,\"voltage\":%.2f,\"current\":%.1f}",
-             s->temp_c,
-             s->pressure_pa     / 100.0f,   // Pa → hPa
-             s->pressure_msl_pa / 100.0f,
-             s->altitude_m,
+             "{"
+             "\"bmp180_temperature\":%.1f"
+             ",\"bmp180_pressure\":%.2f,\"bmp180_pressure_msl\":%.2f"
+             ",\"bmp180_altitude\":%.1f"
+             ",\"bme280_temperature\":%.1f"
+             ",\"bme280_pressure\":%.2f,\"bme280_pressure_msl\":%.2f"
+             ",\"bme280_altitude\":%.1f"
+             ",\"bme280_humidity\":%.1f"
+             ",\"battery\":%d,\"voltage\":%.2f,\"current\":%.1f"
+             "}",
+             s->bmp180_temp_c,
+             s->bmp180_pressure_pa     / 100.0f,   // Pa → hPa
+             s->bmp180_pressure_msl_pa / 100.0f,
+             s->bmp180_altitude_m,
+             s->bme280_temp_c,
+             s->bme280_pressure_pa     / 100.0f,
+             s->bme280_pressure_msl_pa / 100.0f,
+             s->bme280_altitude_m,
+             s->bme280_humidity_pct,
              s->battery_pct, s->voltage_v, s->current_ma);
 
     cyw43_arch_lwip_begin();

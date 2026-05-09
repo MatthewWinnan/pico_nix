@@ -10,7 +10,8 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 pico_sdk_init()
 
-# Shared BMP180 driver library (path is relative to this CMakeLists.txt)
+# Shared driver libraries (paths are relative to this CMakeLists.txt)
+add_subdirectory(../../libs/i2c0   i2c0)
 add_subdirectory(../../libs/bmp180 bmp180)
 
 add_executable(bmp180_sensor

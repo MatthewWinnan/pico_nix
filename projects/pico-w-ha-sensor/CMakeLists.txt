@@ -11,7 +11,10 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 pico_sdk_init()
 
 # Shared drivers (relative to this CMakeLists.txt)
+add_subdirectory(../../libs/i2c0    i2c0)
+add_subdirectory(../../libs/i2c1    i2c1)
 add_subdirectory(../../libs/bmp180  bmp180)
+add_subdirectory(../../libs/bme280  bme280)
 add_subdirectory(../../libs/ina219  ina219)
 
 add_executable(pico_w_ha_sensor
@@ -35,6 +38,7 @@ target_link_libraries(pico_w_ha_sensor
     hardware_sync
     hardware_watchdog
     bmp180
+    bme280
     ina219
 )
 

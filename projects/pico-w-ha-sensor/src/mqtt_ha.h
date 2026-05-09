@@ -5,8 +5,8 @@
 #include "lwip/apps/mqtt.h"
 
 // MQTT topics
-#define MQTT_STATE_TOPIC   "pico/bmp180/state"
-#define MQTT_STATUS_TOPIC  "pico/bmp180/status"
+#define MQTT_STATE_TOPIC   "pico/weather-aux/state"
+#define MQTT_STATUS_TOPIC  "pico/weather-aux/status"
 #define MQTT_GPS_TOPIC     "gps/fr3yr/tpv"
 
 // HA MQTT auto-discovery prefix
@@ -43,14 +43,20 @@ void mqtt_ha_subscribe_gps(mqtt_ha_t *ctx);
 // serialises the whole struct to a single JSON payload.
 typedef struct {
     // BMP180
-    float temp_c;
-    float pressure_pa;      // station pressure (QFE), Pa
-    float pressure_msl_pa;  // sea-level pressure (QNH), Pa
-    float altitude_m;       // EMA-calibrated barometric altitude, m
+    float bmp180_temp_c;
+    float bmp180_pressure_pa;      // station pressure (QFE), Pa
+    float bmp180_pressure_msl_pa;  // sea-level pressure (QNH), Pa
+    float bmp180_altitude_m;       // EMA-calibrated barometric altitude, m
+    // BME280
+    float bme280_temp_c;
+    float bme280_pressure_pa;      // station pressure (QFE), Pa
+    float bme280_pressure_msl_pa;  // sea-level pressure (QNH), Pa
+    float bme280_altitude_m;       // EMA-calibrated barometric altitude, m
+    float bme280_humidity_pct;     // relative humidity, %RH
     // INA219 (Pico-UPS-A)
-    int   battery_pct;      // estimated remaining capacity, %
-    float voltage_v;        // battery bus voltage, V
-    float current_ma;       // charge (+) / discharge (-) current, mA
+    int   battery_pct;          // estimated remaining capacity, %
+    float voltage_v;            // battery bus voltage, V
+    float current_ma;           // charge (+) / discharge (-) current, mA
 } sensor_state_t;
 
 // Publish sensor state JSON to MQTT_STATE_TOPIC.

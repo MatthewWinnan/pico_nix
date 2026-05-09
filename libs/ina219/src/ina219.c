@@ -5,18 +5,11 @@
 // ---------------------------------------------------------------------------
 
 static bool write_reg(uint8_t reg, uint16_t val) {
-    uint8_t buf[3] = { reg, (uint8_t)(val >> 8), (uint8_t)(val & 0xFF) };
-    return i2c_write_blocking(INA219_I2C_PORT, INA219_ADDR, buf, 3, false) == 3;
+    return ina219_i2c_write_reg(INA219_ADDR, reg, val);
 }
 
 static bool read_reg(uint8_t reg, uint16_t *out) {
-    if (i2c_write_blocking(INA219_I2C_PORT, INA219_ADDR, &reg, 1, true) != 1)
-        return false;
-    uint8_t buf[2];
-    if (i2c_read_blocking(INA219_I2C_PORT, INA219_ADDR, buf, 2, false) != 2)
-        return false;
-    *out = ((uint16_t)buf[0] << 8) | buf[1];
-    return true;
+    return ina219_i2c_read_reg(INA219_ADDR, reg, out);
 }
 
 // ---------------------------------------------------------------------------
@@ -59,11 +52,7 @@ static int voltage_to_percent(float v) {
 // ---------------------------------------------------------------------------
 
 void ina219_init(void) {
-    i2c_init(INA219_I2C_PORT, INA219_I2C_BAUD);
-    gpio_set_function(INA219_SDA_PIN, GPIO_FUNC_I2C);
-    gpio_set_function(INA219_SCL_PIN, GPIO_FUNC_I2C);
-    gpio_pull_up(INA219_SDA_PIN);
-    gpio_pull_up(INA219_SCL_PIN);
+    ina219_i2c_init();
 
     // Calibration must be written before current/power registers are valid.
     write_reg(INA219_REG_CALIB,  INA219_CALIB_VALUE);

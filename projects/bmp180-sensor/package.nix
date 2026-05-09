@@ -14,6 +14,7 @@ buildPicoProject {
     root    = repoRoot;
     fileset = pkgs.lib.fileset.unions [
       (repoRoot + /projects/bmp180-sensor)
+      (repoRoot + /libs/i2c0)
       (repoRoot + /libs/bmp180)
     ];
   };
@@ -21,5 +22,7 @@ buildPicoProject {
   # Tell the cmake setup hook to configure from the project subdirectory
   # (the hook prepends "../" when it cds into the build dir, giving the
   # correct absolute source path to cmake).
-  cmakeDir = "projects/bmp180-sensor";
+  # The cmake setup hook cds into a build/ subdirectory before calling cmake,
+  # so cmakeDir must step back up with ../ to reach the source root first.
+  cmakeDir = "../projects/bmp180-sensor";
 }
