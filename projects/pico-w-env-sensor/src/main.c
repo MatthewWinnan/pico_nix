@@ -51,7 +51,7 @@ int main(void) {
         sleep_ms(100);
     }
 
-    printf("\r\npico-w-ha-sensor starting...\r\n");
+    printf("\r\npico-w-env-sensor starting...\r\n");
 
     // ── Credentials ──────────────────────────────────────────────────────────
     creds_t creds;

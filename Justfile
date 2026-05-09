@@ -10,10 +10,15 @@ default:
 build-hello-world:
     cd projects/hello-world && just build
 
-# Build pico-w-ha-sensor and link compile_commands.json at repo root.
-build-pico-w-ha-sensor:
-    cd projects/pico-w-ha-sensor && just build
-    ln -sf projects/pico-w-ha-sensor/build/compile_commands.json compile_commands.json
+# Build pico-w-env-sensor and link compile_commands.json at repo root.
+build-pico-w-env-sensor:
+    cd projects/pico-w-env-sensor && just build
+    ln -sf projects/pico-w-env-sensor/build/compile_commands.json compile_commands.json
+
+# Build pico-w-air-sensor and link compile_commands.json at repo root.
+build-pico-w-air-sensor:
+    cd projects/pico-w-air-sensor && just build
+    ln -sf projects/pico-w-air-sensor/build/compile_commands.json compile_commands.json
 
 # Build bmp180-sensor and link compile_commands.json at repo root.
 # The root-level symlink lets clangd resolve headers for libs/bmp180/ — clangd
@@ -79,6 +84,13 @@ fetch-datasheets:
     test -f docs/datasheets/pico-ups-a-schematic.pdf || \
         curl -fL -o docs/datasheets/pico-ups-a-schematic.pdf \
             https://files.waveshare.com/upload/4/45/Pico-UPS-A_Schematic.pdf
+    # SB Components Pico Air Monitoring Expansion sensors
+    test -f docs/datasheets/pmsa003-datasheet.pdf || \
+        curl -fL -o docs/datasheets/pmsa003-datasheet.pdf \
+            https://www.aqmd.gov/docs/default-source/aq-spec/resources-page/plantower-pms5003-manual_v2-3.pdf
+    test -f docs/datasheets/ssd1306-datasheet.pdf || \
+        curl -fL -o docs/datasheets/ssd1306-datasheet.pdf \
+            https://cdn-shop.adafruit.com/datasheets/SSD1306.pdf
     @echo "Datasheets up to date in docs/datasheets/"
 
 # Download all docs (pinouts + datasheets)

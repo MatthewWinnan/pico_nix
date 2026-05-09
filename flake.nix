@@ -42,7 +42,8 @@
         packages = {
           hello-world        = mkProject ./projects/hello-world/package.nix;
           bmp180-sensor      = mkProject ./projects/bmp180-sensor/package.nix;
-          pico-w-ha-sensor   = mkProject ./projects/pico-w-ha-sensor/package.nix;
+          pico-w-env-sensor   = mkProject ./projects/pico-w-env-sensor/package.nix;
+          pico-w-air-sensor   = mkProject ./projects/pico-w-air-sensor/package.nix;
         };
       }
     );

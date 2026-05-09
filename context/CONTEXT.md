@@ -43,6 +43,26 @@ pico_nix/
 | micropython | 1.27.0 | MicroPython interpreter |
 | mpremote | 1.25.0 | Serial device interaction |
 
+## Project Naming Schema
+
+Projects are named `<board>-<function>` where:
+
+| Segment | Values | Meaning |
+|---------|--------|---------|
+| `pico-w` | Pico W (RP2040 + CYW43439 WiFi) | Board type |
+| `pico` | Pico / Pico H (RP2040, no WiFi) | Board type |
+| `pico2-w` | Pico 2 W (RP2350 + WiFi) | Board type |
+| `pico2` | Pico 2 (RP2350, no WiFi) | Board type |
+| `<function>` | short descriptor of purpose | e.g. `env-sensor`, `air-sensor` |
+
+Always use `sensor` for sensor nodes that publish data, `monitor` for standalone display-only projects.
+
+**Current projects:**
+| Project | Board | Description |
+|---------|-------|-------------|
+| `pico-w-env-sensor` | pico_w | BMP180 + BME280 + INA219 → MQTT/HA |
+| `pico-w-air-sensor` | pico_w | PMSA003 particulate + SSD1306 OLED |
+
 ## Adding a New C/C++ Project
 1. Create `projects/<name>/` with `CMakeLists.txt` and `src/`
 2. Create `projects/<name>/package.nix`:
