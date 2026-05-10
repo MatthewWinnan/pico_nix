@@ -13,8 +13,11 @@
 #define READS_PER_PAGE    5
 #define NUM_PAGES         3
 
-// Average this many reads then publish (~10 seconds per publish).
-#define PUBLISH_INTERVAL  10
+// Collect this many 1 Hz reads then publish (60 = 1-minute average).
+#define PUBLISH_INTERVAL  60
+
+// Ring buffer depth for 1-hour rolling means (60 × 1-min = 60 min).
+#define HOURLY_SAMPLES    60
 
 // ---------------------------------------------------------------------------
 // Display helpers — no-op when USB is not connected (field/battery mode).
@@ -26,6 +29,28 @@
 // ---------------------------------------------------------------------------
 
 static bool s_display;  // set once in main(); never changes after that
+
+// ---------------------------------------------------------------------------
+// 1-hour rolling mean ring buffers (survive for the process lifetime)
+// ---------------------------------------------------------------------------
+
+static float s_pm25_buf[HOURLY_SAMPLES];
+static float s_pm10_buf[HOURLY_SAMPLES];
+static int   s_hour_count = 0;  // entries filled so far (caps at HOURLY_SAMPLES)
+static int   s_hour_write = 0;  // next write index
+
+// ---------------------------------------------------------------------------
+// WHO AQI category from 1-min PM2.5 mean (µg/m³)
+// Breakpoints from WHO Air Quality Guidelines 2021.
+// ---------------------------------------------------------------------------
+
+static const char *aqi_category(float pm2_5) {
+    if (pm2_5 <  5.0f) return "Good";
+    if (pm2_5 < 15.0f) return "Fair";
+    if (pm2_5 < 25.0f) return "Moderate";
+    if (pm2_5 < 50.0f) return "Poor";
+    return "Very poor";
+}
 
 static void disp_init(void)                              { if (s_display) ssd1306_init(); }
 static void disp_clear(void)                             { if (s_display) ssd1306_clear(); }
@@ -219,18 +244,43 @@ int main(void) {
         read_count++;
 
         if (read_count % PUBLISH_INTERVAL == 0) {
-            pmsa003_data_t avg = {
-                .pm10    = (uint16_t)(acc_pm10    / PUBLISH_INTERVAL),
-                .pm25    = (uint16_t)(acc_pm25    / PUBLISH_INTERVAL),
-                .pm100   = (uint16_t)(acc_pm100   / PUBLISH_INTERVAL),
+            float pm25_mean = (float)acc_pm25  / PUBLISH_INTERVAL;
+            float pm10_mean = (float)acc_pm100 / PUBLISH_INTERVAL;
+
+            // Push 1-min means into the hourly ring buffer
+            s_pm25_buf[s_hour_write] = pm25_mean;
+            s_pm10_buf[s_hour_write] = pm10_mean;
+            s_hour_write = (s_hour_write + 1) % HOURLY_SAMPLES;
+            if (s_hour_count < HOURLY_SAMPLES) s_hour_count++;
+
+            // Compute 1-hour means once the buffer is full
+            float pm25_1h = 0.0f, pm10_1h = 0.0f;
+            bool  hourly_valid = (s_hour_count == HOURLY_SAMPLES);
+            if (hourly_valid) {
+                for (int i = 0; i < HOURLY_SAMPLES; i++) {
+                    pm25_1h += s_pm25_buf[i];
+                    pm10_1h += s_pm10_buf[i];
+                }
+                pm25_1h /= HOURLY_SAMPLES;
+                pm10_1h /= HOURLY_SAMPLES;
+            }
+
+            air_state_t state = {
+                .pm1_0   = (uint16_t)(acc_pm10    / PUBLISH_INTERVAL),
+                .pm2_5   = (uint16_t)(pm25_mean + 0.5f),
+                .pm10    = (uint16_t)(pm10_mean + 0.5f),
                 .cnt_03  = (uint16_t)(acc_cnt_03  / PUBLISH_INTERVAL),
                 .cnt_05  = (uint16_t)(acc_cnt_05  / PUBLISH_INTERVAL),
                 .cnt_10  = (uint16_t)(acc_cnt_10  / PUBLISH_INTERVAL),
                 .cnt_25  = (uint16_t)(acc_cnt_25  / PUBLISH_INTERVAL),
                 .cnt_50  = (uint16_t)(acc_cnt_50  / PUBLISH_INTERVAL),
                 .cnt_100 = (uint16_t)(acc_cnt_100 / PUBLISH_INTERVAL),
+                .pm2_5_1h    = pm25_1h,
+                .pm10_1h     = pm10_1h,
+                .hourly_valid = hourly_valid,
+                .aqi         = aqi_category(pm25_mean),
             };
-            mqtt_ha_publish_state(&mqtt, &avg);
+            mqtt_ha_publish_state(&mqtt, &state);
 
             acc_pm10 = acc_pm25 = acc_pm100 = 0;
             acc_cnt_03 = acc_cnt_05 = acc_cnt_10 = 0;

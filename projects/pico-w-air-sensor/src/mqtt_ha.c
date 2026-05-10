@@ -115,13 +115,15 @@ bool mqtt_ha_connect(mqtt_ha_t *ctx, const char *host, uint16_t port) {
 }
 
 // Helper: build and retain-publish one discovery config.
-// Pass device_class = NULL to omit it.
+// device_class may be NULL. value_template is the full Jinja2 template string.
+// expire_after_s: seconds after which HA marks entity unavailable (0 = never).
 static void publish_discovery(mqtt_ha_t *ctx,
                               const char *object_id,
                               const char *name,
-                              const char *device_class,  // nullable
+                              const char *device_class,
                               const char *unit,
-                              const char *value_key) {
+                              const char *value_template,
+                              uint32_t    expire_after_s) {
     char topic[128];
     snprintf(topic, sizeof(topic),
              HA_DISC_PREFIX "/sensor/%s/config", object_id);
@@ -132,6 +134,12 @@ static void publish_discovery(mqtt_ha_t *ctx,
                  "\"device_class\":\"%s\",", device_class);
     }
 
+    char expire_field[32] = "";
+    if (expire_after_s) {
+        snprintf(expire_field, sizeof(expire_field),
+                 "\"expire_after\":%lu,", (unsigned long)expire_after_s);
+    }
+
     char payload[768];
     snprintf(payload, sizeof(payload),
              "{"
@@ -140,7 +148,8 @@ static void publish_discovery(mqtt_ha_t *ctx,
              "\"object_id\":\"%s\","
              "\"state_topic\":\"%s\","
              "\"unit_of_measurement\":\"%s\","
-             "\"value_template\":\"{{ value_json.%s }}\","
+             "\"value_template\":\"%s\","
+             "%s"
              "\"unique_id\":\"%s\","
              "\"availability_topic\":\"%s\","
              "\"payload_available\":\"online\","
@@ -153,7 +162,7 @@ static void publish_discovery(mqtt_ha_t *ctx,
              "}"
              "}",
              name, dc_field, object_id, MQTT_STATE_TOPIC, unit,
-             value_key, object_id, MQTT_STATUS_TOPIC);
+             value_template, expire_field, object_id, MQTT_STATUS_TOPIC);
 
     cyw43_arch_lwip_begin();
     mqtt_publish(ctx->client, topic,
@@ -163,56 +172,68 @@ static void publish_discovery(mqtt_ha_t *ctx,
 }
 
 void mqtt_ha_publish_discovery(mqtt_ha_t *ctx) {
-    // PM concentrations — HA has native device classes for these
-    publish_discovery(ctx,
-        "air_pm1_0", "PM1.0", "pm1", "\xc2\xb5g/m\xc2\xb3", "pm1_0");
-    sleep_ms(200);
+    // Publish every 60 s; expire after 90 s so HA marks unavailable if silent.
+    const uint32_t exp = 90;
+#define PD(id, name, dc, unit, vt) \
+    publish_discovery(ctx, id, name, dc, unit, vt, exp); sleep_ms(200)
 
-    publish_discovery(ctx,
-        "air_pm2_5", "PM2.5", "pm25", "\xc2\xb5g/m\xc2\xb3", "pm2_5");
-    sleep_ms(200);
+    // ── 1-min averages ────────────────────────────────────────────────────────
+    PD("air_pm1_0", "PM1.0 (1 min)",  "pm1",  "\xc2\xb5g/m\xc2\xb3",
+       "{{ value_json.pm1_0 }}");
+    PD("air_pm2_5", "PM2.5 (1 min)",  "pm25", "\xc2\xb5g/m\xc2\xb3",
+       "{{ value_json.pm2_5 }}");
+    PD("air_pm10",  "PM10 (1 min)",   "pm10", "\xc2\xb5g/m\xc2\xb3",
+       "{{ value_json.pm10 }}");
 
-    publish_discovery(ctx,
-        "air_pm10", "PM10", "pm10", "\xc2\xb5g/m\xc2\xb3", "pm10");
-    sleep_ms(200);
+    // ── 1-hour rolling means (unknown until 60 min of data) ──────────────────
+    PD("air_pm2_5_1h", "PM2.5 (1 h mean)", "pm25", "\xc2\xb5g/m\xc2\xb3",
+       "{{ value_json.pm2_5_1h | default(None) }}");
+    PD("air_pm10_1h",  "PM10 (1 h mean)",  "pm10", "\xc2\xb5g/m\xc2\xb3",
+       "{{ value_json.pm10_1h | default(None) }}");
 
-    // Particle counts — no standard HA device class
-    publish_discovery(ctx,
-        "air_cnt_03", "Particles >0.3\xc2\xb5m", NULL, "p/0.1L", "cnt_03");
-    sleep_ms(200);
+    // ── WHO AQI category (derived from 1-min PM2.5) ───────────────────────────
+    PD("air_aqi", "Air Quality (WHO)", NULL, "",
+       "{{ value_json.aqi }}");
 
-    publish_discovery(ctx,
-        "air_cnt_05", "Particles >0.5\xc2\xb5m", NULL, "p/0.1L", "cnt_05");
-    sleep_ms(200);
+    // ── Particle counts ────────────────────────────────────────────────────────
+    PD("air_cnt_03",  "Particles >0.3\xc2\xb5m", NULL, "p/0.1L",
+       "{{ value_json.cnt_03 }}");
+    PD("air_cnt_05",  "Particles >0.5\xc2\xb5m", NULL, "p/0.1L",
+       "{{ value_json.cnt_05 }}");
+    PD("air_cnt_10",  "Particles >1.0\xc2\xb5m", NULL, "p/0.1L",
+       "{{ value_json.cnt_10 }}");
+    PD("air_cnt_25",  "Particles >2.5\xc2\xb5m", NULL, "p/0.1L",
+       "{{ value_json.cnt_25 }}");
+    PD("air_cnt_50",  "Particles >5.0\xc2\xb5m", NULL, "p/0.1L",
+       "{{ value_json.cnt_50 }}");
+    PD("air_cnt_100", "Particles >10\xc2\xb5m",  NULL, "p/0.1L",
+       "{{ value_json.cnt_100 }}");
 
-    publish_discovery(ctx,
-        "air_cnt_10", "Particles >1.0\xc2\xb5m", NULL, "p/0.1L", "cnt_10");
-    sleep_ms(200);
-
-    publish_discovery(ctx,
-        "air_cnt_25", "Particles >2.5\xc2\xb5m", NULL, "p/0.1L", "cnt_25");
-    sleep_ms(200);
-
-    publish_discovery(ctx,
-        "air_cnt_50", "Particles >5.0\xc2\xb5m", NULL, "p/0.1L", "cnt_50");
-    sleep_ms(200);
-
-    publish_discovery(ctx,
-        "air_cnt_100", "Particles >10\xc2\xb5m", NULL, "p/0.1L", "cnt_100");
-    sleep_ms(200);
+#undef PD
 }
 
-void mqtt_ha_publish_state(mqtt_ha_t *ctx, const pmsa003_data_t *d) {
-    char payload[256];
+void mqtt_ha_publish_state(mqtt_ha_t *ctx, const air_state_t *s) {
+    // Build optional hourly mean fields — omit until valid so HA shows unknown.
+    char hourly[64] = "";
+    if (s->hourly_valid) {
+        snprintf(hourly, sizeof(hourly),
+                 ",\"pm2_5_1h\":%.1f,\"pm10_1h\":%.1f",
+                 s->pm2_5_1h, s->pm10_1h);
+    }
+
+    char payload[320];
     snprintf(payload, sizeof(payload),
              "{"
              "\"pm1_0\":%u,\"pm2_5\":%u,\"pm10\":%u,"
+             "\"aqi\":\"%s\""
+             "%s,"
              "\"cnt_03\":%u,\"cnt_05\":%u,\"cnt_10\":%u,"
              "\"cnt_25\":%u,\"cnt_50\":%u,\"cnt_100\":%u"
              "}",
-             d->pm10, d->pm25, d->pm100,
-             d->cnt_03, d->cnt_05, d->cnt_10,
-             d->cnt_25, d->cnt_50, d->cnt_100);
+             s->pm1_0, s->pm2_5, s->pm10,
+             s->aqi, hourly,
+             s->cnt_03, s->cnt_05, s->cnt_10,
+             s->cnt_25, s->cnt_50, s->cnt_100);
 
     cyw43_arch_lwip_begin();
     mqtt_publish(ctx->client, MQTT_STATE_TOPIC,
