@@ -60,7 +60,7 @@ static float         s_station_alt   = FALLBACK_STATION_ALT_M;
 
 // Minimum half-period pressure change (hPa) to be considered "significant".
 // 0.3 hPa over 1.5 h is a meaningful signal; noise is typically < 0.1 hPa.
-#define TEND_SIG 0.3f
+#define TEND_SIG 0.5f
 // Difference between halves required to call a rise/fall "accelerating" or
 // "decelerating" rather than "steady".
 #define TEND_ACC 0.2f
