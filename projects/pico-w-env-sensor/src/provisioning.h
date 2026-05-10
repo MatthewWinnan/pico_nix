@@ -8,6 +8,7 @@
 // The magic value 0xC0FFEE01 guards against uninitialised flash reads.
 
 #define CREDS_MAGIC  0xC0FFEE01UL
+#define QNH_MAGIC    0xC0FFEE02UL
 
 typedef struct {
     uint32_t magic;
@@ -16,6 +17,11 @@ typedef struct {
     char     mqtt_host[128];   // IP address or hostname
     uint16_t mqtt_port;
     uint8_t  _pad[2];
+    // QNH EMA reference (sea-level pressure, Pa).
+    // Persisted across power cycles; guarded by its own magic so it
+    // gracefully defaults to the standard atmosphere if never written.
+    float    qnh_ref_pa;
+    uint32_t qnh_magic;
 } creds_t;
 
 // Load credentials from flash into *out. Returns true if magic matches.
@@ -26,6 +32,15 @@ bool creds_load(creds_t *out);
 void creds_provision(creds_t *out);
 
 // Erase the credential sector — clears the magic so next boot re-provisions.
+// Also wipes the QNH EMA since both live in the same sector.
 void creds_invalidate(void);
+
+// Persist the QNH EMA reference to flash alongside the current credentials.
+// No-op if credentials have not been written (no valid creds to update).
+void qnh_save(float qnh_pa);
+
+// Load the persisted QNH EMA reference from flash.
+// Returns 101325.0 (standard atmosphere) if it has never been written.
+float qnh_load(void);
 
 #endif // PROVISIONING_H

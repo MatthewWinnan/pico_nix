@@ -16,19 +16,26 @@ static bool read_reg(uint8_t reg, uint16_t *out) {
 // Battery percentage from LiPo discharge curve
 // ---------------------------------------------------------------------------
 
-// Piecewise-linear approximation of a typical 14500 Li-ion discharge curve.
+// Piecewise-linear curve derived from a measured discharge of this specific battery
+// (Pico-UPS-A, 800 mAh LiPo) under ~21 mA load, captured via HA history (history.csv,
+// 2026-05-09 15:43 → 2026-05-10 04:46, 13.05 h from 4.06 V to 3.09 V).
+// Time-based percentage: each point maps elapsed-time fraction to measured voltage.
+// Upper anchor (4.20 V) is the ETA6003 charger target; 4.06 V is the settled
+// post-charge voltage (~97% — very little capacity sits in the top-off region).
+// The plateau between 3.83–4.03 V is much flatter than a generic LiPo curve.
 // Points are ordered highest voltage first.
 static const struct { float v; int pct; } lipo_curve[] = {
-    { 4.20f, 100 },
-    { 4.05f,  90 },
-    { 3.95f,  80 },
-    { 3.85f,  70 },
-    { 3.75f,  55 },
-    { 3.65f,  40 },
-    { 3.55f,  25 },
-    { 3.40f,  10 },
-    { 3.20f,   5 },
-    { 3.00f,   0 },
+    { 4.20f, 100 },  // charger target (ETA6003)
+    { 4.06f,  97 },  // settled after full charge
+    { 4.03f,  90 },
+    { 3.99f,  80 },
+    { 3.93f,  70 },
+    { 3.87f,  55 },  // start of very flat mid-plateau
+    { 3.83f,  40 },
+    { 3.75f,  25 },
+    { 3.60f,  10 },
+    { 3.45f,   5 },
+    { 3.00f,   0 },  // protection cutoff
 };
 static const int LIPO_CURVE_LEN =
     (int)(sizeof(lipo_curve) / sizeof(lipo_curve[0]));

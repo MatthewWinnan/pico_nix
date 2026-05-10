@@ -93,8 +93,15 @@ fetch-datasheets:
             https://cdn-shop.adafruit.com/datasheets/SSD1306.pdf
     @echo "Datasheets up to date in docs/datasheets/"
 
+# Download all the standards I want to follow
+fetch-standards:
+    mkdir -p docs/standards
+    test -f docs/standards/WMO-8-vI-2024_en.pdf || \
+        curl -fL -o docs/standards/WMO-8-vI-2024_en.pdf \
+            https://library.wmo.int/viewer/68695/download?file=WMO-8-vI-2024_en.pdf
+
 # Download all docs (pinouts + datasheets)
-fetch-docs: fetch-pinouts fetch-datasheets
+fetch-docs: fetch-pinouts fetch-datasheets fetch-standards
     @echo "All docs fetched."
 
 # List what has been downloaded

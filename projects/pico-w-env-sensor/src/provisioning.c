@@ -46,6 +46,23 @@ static void creds_save(const creds_t *in) {
     restore_interrupts(irq);
 }
 
+void qnh_save(float qnh_pa) {
+    const creds_t *stored = (const creds_t *)CREDS_FLASH_ADDR;
+    if (stored->magic != CREDS_MAGIC) return;  // no valid creds to update
+
+    creds_t buf;
+    memcpy(&buf, stored, sizeof(creds_t));
+    buf.qnh_ref_pa = qnh_pa;
+    buf.qnh_magic  = QNH_MAGIC;
+    creds_save(&buf);
+}
+
+float qnh_load(void) {
+    const creds_t *stored = (const creds_t *)CREDS_FLASH_ADDR;
+    if (stored->qnh_magic == QNH_MAGIC) return stored->qnh_ref_pa;
+    return 101325.0f;
+}
+
 // Read one line from USB serial with local echo and backspace support.
 static void read_line(char *buf, size_t maxlen) {
     size_t i = 0;
