@@ -70,6 +70,14 @@ static void inpub_data_cb(void *arg, const u8_t *data, u16_t len, u8_t flags) {
     if (!(flags & MQTT_DATA_FLAG_LAST)) return;
 
     s_gps_buf[s_gps_buf_len] = '\0';
+
+    // Require mode=3 (3D fix) before trusting the altitude.
+    // gpsd sets mode=1 (no fix) or mode=2 (2D fix) when vertical accuracy is
+    // poor; in those cases alt is absent or zero.  Accepting a non-3D altitude
+    // would zero s_station_alt and collapse MSL pressure to station pressure.
+    char *mp = strstr(s_gps_buf, "\"mode\":");
+    if (!mp || (int)strtol(mp + 7, NULL, 10) != 3) return;
+
     char *p = strstr(s_gps_buf, "\"alt\":");
     if (p) {
         float alt = strtof(p + 6, NULL);
@@ -242,14 +250,13 @@ void mqtt_ha_publish_discovery(mqtt_ha_t *ctx, uint32_t expire_after_s) {
        MQTT_STATE_TOPIC, "{{ value_json.current }}");
 
     // ── High-resolution pressure (1-min samples on hires topic) ───────────────
-    PD(ctx, "bmp180_press_hires",     "BMP180 Pressure hires (QFE)",     "atmospheric_pressure", "hPa",
+    // MSL hires removed: without per-message timestamps the MSL values are
+    // indistinguishable in HA history.  QFE hires retained for short-term
+    // oscillation and thunderstorm-passage detection.
+    PD(ctx, "bmp180_press_hires", "BMP180 Pressure hires (QFE)", "atmospheric_pressure", "hPa",
        MQTT_PRESS_HIRES_TOPIC, "{{ value_json.bmp_pa }}");
-    PD(ctx, "bmp180_press_msl_hires", "BMP180 Pressure MSL hires (QNH)", "atmospheric_pressure", "hPa",
-       MQTT_PRESS_HIRES_TOPIC, "{{ value_json.bmp_msl_pa }}");
-    PD(ctx, "bme280_press_hires",     "BME280 Pressure hires (QFE)",     "atmospheric_pressure", "hPa",
+    PD(ctx, "bme280_press_hires", "BME280 Pressure hires (QFE)", "atmospheric_pressure", "hPa",
        MQTT_PRESS_HIRES_TOPIC, "{{ value_json.bme_pa }}");
-    PD(ctx, "bme280_press_msl_hires", "BME280 Pressure MSL hires (QNH)", "atmospheric_pressure", "hPa",
-       MQTT_PRESS_HIRES_TOPIC, "{{ value_json.bme_msl_pa }}");
 
     // ── Pressure tendency (3-hour change + WMO characteristic, BME280) ───────
     // All three return None (→ unknown state) until 3 hours of data accumulate.
@@ -259,6 +266,12 @@ void mqtt_ha_publish_discovery(mqtt_ha_t *ctx, uint32_t expire_after_s) {
        MQTT_STATE_TOPIC, "{{ value_json.tendency_a | default(None) }}");
     PD(ctx, "bme280_tendency_a_desc", "Pressure Tendency Description", NULL, "",
        MQTT_STATE_TOPIC, "{{ value_json.tendency_a_desc | default(None) }}");
+
+    // ── Kalman GPS altitude reference ─────────────────────────────────────────
+    // Physical station altitude smoothed over many GPS fixes.
+    // Converges from 11.2 m raw GPS noise to ~1.2 m after ~16 h of operation.
+    PD(ctx, "station_alt_kalman", "Station Altitude (Kalman)", NULL, "m",
+       MQTT_STATE_TOPIC, "{{ value_json.station_alt }}");
 
 #undef PD
 }
@@ -326,7 +339,7 @@ void mqtt_ha_publish_state(mqtt_ha_t *ctx, const sensor_state_t *s) {
                  s_tend_a_desc[s->tendency_a]);
     }
 
-    char payload[600];
+    char payload[640];
     snprintf(payload, sizeof(payload),
              "{"
              "\"bmp180_temperature\":%.1f"
@@ -337,6 +350,7 @@ void mqtt_ha_publish_state(mqtt_ha_t *ctx, const sensor_state_t *s) {
              ",\"bme280_altitude\":%.1f"
              ",\"bme280_humidity\":%.1f"
              ",\"battery\":%d,\"voltage\":%.2f,\"current\":%.1f"
+             ",\"station_alt\":%.1f"
              "%s"
              "}",
              s->bmp180_temp_c,
@@ -349,6 +363,7 @@ void mqtt_ha_publish_state(mqtt_ha_t *ctx, const sensor_state_t *s) {
              s->bme280_altitude_m,
              s->bme280_humidity_pct,
              s->battery_pct, s->voltage_v, s->current_ma,
+             s->station_alt_m,
              tend_str);
 
     cyw43_arch_lwip_begin();
@@ -363,10 +378,8 @@ void mqtt_ha_publish_press_hires(mqtt_ha_t *ctx,
     char payload[128];
     for (int i = 0; i < count; i++) {
         snprintf(payload, sizeof(payload),
-                 "{\"bmp_pa\":%.2f,\"bmp_msl_pa\":%.2f"
-                 ",\"bme_pa\":%.2f,\"bme_msl_pa\":%.2f}",
-                 readings[i].bmp_pa,     readings[i].bmp_msl_pa,
-                 readings[i].bme_pa,     readings[i].bme_msl_pa);
+                 "{\"bmp_pa\":%.2f,\"bme_pa\":%.2f}",
+                 readings[i].bmp_pa, readings[i].bme_pa);
         cyw43_arch_lwip_begin();
         mqtt_publish(ctx->client, MQTT_PRESS_HIRES_TOPIC,
                      payload, strlen(payload),

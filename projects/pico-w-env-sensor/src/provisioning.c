@@ -28,7 +28,7 @@ void creds_invalidate(void) {
 }
 
 // Number of 256-byte flash pages needed to hold creds_t.
-// sizeof(creds_t) == 264, so this evaluates to 2 at compile time.
+// sizeof(creds_t) grows as new fields are added; CREDS_PAGES always rounds up.
 #define CREDS_PAGES  ((sizeof(creds_t) + FLASH_PAGE_SIZE - 1) / FLASH_PAGE_SIZE)
 
 // Write *in to flash (erase sector first).
@@ -46,14 +46,17 @@ static void creds_save(const creds_t *in) {
     restore_interrupts(irq);
 }
 
-void qnh_save(float qnh_pa) {
+void params_save(float qnh_pa, float alt_est, float alt_var) {
     const creds_t *stored = (const creds_t *)CREDS_FLASH_ADDR;
-    if (stored->magic != CREDS_MAGIC) return;  // no valid creds to update
+    if (stored->magic != CREDS_MAGIC) return;
 
     creds_t buf;
     memcpy(&buf, stored, sizeof(creds_t));
     buf.qnh_ref_pa = qnh_pa;
     buf.qnh_magic  = QNH_MAGIC;
+    buf.alt_est    = alt_est;
+    buf.alt_var    = alt_var;
+    buf.alt_magic  = ALT_MAGIC;
     creds_save(&buf);
 }
 
@@ -61,6 +64,17 @@ float qnh_load(void) {
     const creds_t *stored = (const creds_t *)CREDS_FLASH_ADDR;
     if (stored->qnh_magic == QNH_MAGIC) return stored->qnh_ref_pa;
     return 101325.0f;
+}
+
+void alt_load(float *est, float *var) {
+    const creds_t *stored = (const creds_t *)CREDS_FLASH_ADDR;
+    if (stored->alt_magic == ALT_MAGIC) {
+        *est = stored->alt_est;
+        *var = stored->alt_var;
+    } else {
+        *est = 1457.8f;   // FALLBACK_STATION_ALT_M
+        *var = 125.0f;    // GPS_ALT_R (11.2 m stddev)²
+    }
 }
 
 // Read one line from USB serial with local echo and backspace support.

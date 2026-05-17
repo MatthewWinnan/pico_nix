@@ -9,6 +9,7 @@
 
 #define CREDS_MAGIC  0xC0FFEE01UL
 #define QNH_MAGIC    0xC0FFEE02UL
+#define ALT_MAGIC    0xC0FFEE03UL
 
 typedef struct {
     uint32_t magic;
@@ -22,6 +23,12 @@ typedef struct {
     // gracefully defaults to the standard atmosphere if never written.
     float    qnh_ref_pa;
     uint32_t qnh_magic;
+    // Kalman filter state for GPS altitude (m).
+    // alt_est: posterior altitude estimate; alt_var: posterior variance (m²).
+    // Persisted so the filter survives power cycles without re-converging.
+    float    alt_est;
+    float    alt_var;
+    uint32_t alt_magic;
 } creds_t;
 
 // Load credentials from flash into *out. Returns true if magic matches.
@@ -35,12 +42,17 @@ void creds_provision(creds_t *out);
 // Also wipes the QNH EMA since both live in the same sector.
 void creds_invalidate(void);
 
-// Persist the QNH EMA reference to flash alongside the current credentials.
-// No-op if credentials have not been written (no valid creds to update).
-void qnh_save(float qnh_pa);
+// Persist QNH EMA + Kalman altitude state in a single flash write.
+// Use this after every GPS fetch to avoid two separate erase/program cycles.
+// No-op if credentials have not been written.
+void params_save(float qnh_pa, float alt_est, float alt_var);
 
 // Load the persisted QNH EMA reference from flash.
 // Returns 101325.0 (standard atmosphere) if it has never been written.
 float qnh_load(void);
+
+// Load the persisted Kalman altitude state from flash.
+// Writes fallback defaults (1457.8 m / 125.0 m²) into *est/*var if never written.
+void alt_load(float *est, float *var);
 
 #endif // PROVISIONING_H

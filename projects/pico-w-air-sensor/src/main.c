@@ -42,14 +42,44 @@ static int   s_hour_write = 0;  // next write index
 // ---------------------------------------------------------------------------
 // WHO AQI category from 1-min PM2.5 mean (µg/m³)
 // Breakpoints from WHO Air Quality Guidelines 2021.
+// Hysteresis: a category change only commits when PM2.5 has crossed the
+// boundary by AQI_HYST µg/m³.  This prevents rapid flipping when the
+// 1-min mean oscillates around a boundary (observed at ~103 s median period).
 // ---------------------------------------------------------------------------
 
+// Deadband half-width at each category boundary (µg/m³).
+// Effective transition thresholds with AQI_HYST = 2.0:
+//
+//   Boundary       Enter higher band at   Leave higher band at   Dead zone
+//   Good/Fair             ≥ 7.0                  <  3.0            3–7
+//   Fair/Moderate         ≥ 17.0                 < 13.0           13–17
+//   Moderate/Poor         ≥ 27.0                 < 23.0           23–27
+//   Poor/Very poor        ≥ 52.0                 < 48.0           48–52
+//
+// While PM2.5 stays inside a dead zone the current category is held,
+// preventing the rapid flipping observed at ~103 s median period.
+#define AQI_HYST 2.0f
+
 static const char *aqi_category(float pm2_5) {
-    if (pm2_5 <  5.0f) return "Good";
-    if (pm2_5 < 15.0f) return "Fair";
-    if (pm2_5 < 25.0f) return "Moderate";
-    if (pm2_5 < 50.0f) return "Poor";
-    return "Very poor";
+    // Nominal upper boundary of each band (Good/Fair/Moderate/Poor)
+    static const float bounds[] = { 5.0f, 15.0f, 25.0f, 50.0f };
+    static const char *names[]  = { "Good", "Fair", "Moderate", "Poor", "Very poor" };
+    static int idx = -1;
+
+    if (idx < 0) {
+        // First call: seed without hysteresis so the initial category is correct
+        idx = 0;
+        while (idx < 4 && pm2_5 >= bounds[idx]) idx++;
+        return names[idx];
+    }
+
+    // Upgrade only when pm2_5 has crossed the boundary by a full HYST margin
+    while (idx < 4 && pm2_5 >= bounds[idx] + AQI_HYST) idx++;
+    // Downgrade only when pm2_5 has fallen below the boundary by a full HYST margin
+    while (idx > 0 && pm2_5 <  bounds[idx - 1] - AQI_HYST) idx--;
+    // If pm2_5 is inside a dead zone neither loop fires and idx is unchanged.
+
+    return names[idx];
 }
 
 static void disp_init(void)                              { if (s_display) ssd1306_init(); }

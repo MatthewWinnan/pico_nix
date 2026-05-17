@@ -28,11 +28,11 @@ typedef struct {
 
 // One 1-minute pressure sample, stored in hPa.
 // Ten of these are burst-published to MQTT_PRESS_HIRES_TOPIC every 10 min.
+// MSL fields removed: without per-message timestamps the QNH values are
+// indistinguishable in HA history.
 typedef struct {
-    float bmp_pa;      // BMP180 station pressure (QFE), hPa
-    float bmp_msl_pa;  // BMP180 sea-level pressure (QNH), hPa
-    float bme_pa;      // BME280 station pressure (QFE), hPa
-    float bme_msl_pa;  // BME280 sea-level pressure (QNH), hPa
+    float bmp_pa;  // BMP180 station pressure (QFE), hPa
+    float bme_pa;  // BME280 station pressure (QFE), hPa
 } press_hires_t;
 
 // Initialise, connect, and wait until connected (or timeout).
@@ -60,12 +60,12 @@ typedef struct {
     // BMP180 — temperature is 10-min mean; pressure/altitude are last 1-min sample
     float bmp180_temp_c;
     float bmp180_pressure_pa;      // station pressure (QFE), Pa
-    float bmp180_pressure_msl_pa;  // sea-level pressure (QNH), Pa
+    float bmp180_pressure_msl_pa;  // sea-level pressure, WMO hypsometric+Tv (QNH), Pa
     float bmp180_altitude_m;
     // BME280 — temperature and humidity are 10-min means; pressure is last 1-min sample
     float bme280_temp_c;
     float bme280_pressure_pa;
-    float bme280_pressure_msl_pa;
+    float bme280_pressure_msl_pa;  // sea-level pressure, WMO hypsometric+Tv (QNH), Pa
     float bme280_altitude_m;
     float bme280_humidity_pct;
     // INA219 (Pico-UPS-A) — all are 10-min means
@@ -76,6 +76,9 @@ typedef struct {
     float bme280_tendency_hpa;  // net hPa change over 3 h (BME280 MSL, more accurate)
     int   tendency_a;           // WMO characteristic code 0-8 (code table 0200)
     bool  tendency_valid;
+    // Kalman-filtered GPS altitude reference — physical station height (m).
+    // Smoothed over many GPS fixes; converges to ~1.2 m stddev vs 11.2 m raw.
+    float station_alt_m;
 } sensor_state_t;
 
 // Publish sensor state JSON to MQTT_STATE_TOPIC.

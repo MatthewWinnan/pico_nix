@@ -19,6 +19,12 @@
 // Fallback station altitude used if no GPS fix has been received yet.
 #define FALLBACK_STATION_ALT_M  1457.8f
 
+// Minimum plausible GPS altitude for this site (m).
+// GPS reports alt=0 when fix quality is too poor (2D-only fix or total loss).
+// Any altitude below this floor is rejected so the Kalman filter is not
+// poisoned — s_alt_est retains its last good estimate instead.
+#define GPS_ALT_MIN_M           1400.0f
+
 // WMO-aligned sampling: 1-min interval, publish every 10 samples (10 min).
 // WiFi is only powered up on the 10th cycle, giving ~10% WiFi duty cycle.
 #define MEASURE_INTERVAL_MS   60000
@@ -30,6 +36,13 @@
 // EMA smoothing factor for QNH (sea-level pressure reference).
 // α=0.20 → ~5-sample window (~50 min at 10-min publish rate).
 #define QNH_EMA_ALPHA         0.2f
+
+// Kalman filter parameters for GPS altitude (stationary sensor).
+// R: GPS altitude measurement variance (m²). Data shows σ ≈ 11.2 m → R ≈ 125.
+// Q: Process noise variance (m²). Near-zero because station altitude is fixed;
+//    tiny value prevents the posterior variance from collapsing to exactly zero.
+#define GPS_ALT_R  125.0f
+#define GPS_ALT_Q  0.01f
 
 // ---------------------------------------------------------------------------
 // Static accumulators — survive SLEEPDEEP (SRAM retained when only PLL_SYS
@@ -50,20 +63,67 @@ static press_hires_t s_hires[SAMPLES_PER_PUBLISH];
 static float         s_tend_buf[TENDENCY_HISTORY];
 static int           s_tend_count    = 0;  // entries filled so far (caps at TENDENCY_HISTORY)
 static int           s_tend_write    = 0;  // index of next write slot
+// Hysteresis state for tendency direction (-1=falling, 0=steady, +1=rising).
+// Reset alongside the ring whenever a publish cycle is skipped.
+static int           s_tend_dir      = 0;
+static int           s_last_tend_a   = 4;  // last reported WMO code; default Steady
 
-// Last-known GPS altitude; updated every 10-min publish cycle.
-static float         s_station_alt   = FALLBACK_STATION_ALT_M;
+// Kalman filter state for GPS altitude.
+// Initialised from flash (alt_load) in main() before first use.
+// Persists across deep sleep via SRAM retention; saved to flash on GPS update.
+static float         s_alt_est;   // posterior altitude estimate (m)
+static float         s_alt_var;   // posterior variance (m²)
+
+// Last values actually written to flash — used to suppress redundant writes.
+// Initialised from flash in main() alongside s_alt_est / qnh_ref_pa.
+// Flash is only written when either value moves beyond its threshold:
+//   altitude: > 0.5 m  (converged Kalman drift < 0.1 m/update → near-zero writes)
+//   QNH:      > 10 Pa (= 0.1 hPa) to capture real weather changes
+static float         s_saved_alt;
+static float         s_saved_qnh;
+
+// ---------------------------------------------------------------------------
+// WMO hypsometric formula with virtual temperature correction (WMO SLP)
+// ---------------------------------------------------------------------------
+//
+// ICAO simplified QNH = P_station / (1 - h/44330)^5.255
+// That formula implicitly assumes ISA temperature at altitude h (≈5.5°C here).
+// The WMO meteorological SLP standard uses the full hypsometric formula with
+// virtual temperature Tv, which accounts for actual T and humidity.
+//
+// At 1458 m with T≈15°C the correction is ~-3.7 hPa vs ICAO QNH.
+// Both raw (ICAO) and corrected (Tv) values are published so neither is lost.
+//
+// P_station_pa: station pressure (Pa)
+// alt_m:        station altitude (m)
+// T_c:          air temperature (°C) — use BME280 (more accurate than BMP180)
+// RH:           relative humidity (%) — from BME280
+// Returns:      sea-level pressure (Pa) via hypsometric+Tv
+static float msl_virtual_temp(float P_station_pa, float alt_m,
+                               float T_c, float RH) {
+    float es_hpa = 6.1078f * expf(17.27f * T_c / (T_c + 237.3f));
+    float e_hpa  = (RH / 100.0f) * es_hpa;
+    float T_k    = T_c + 273.15f;
+    float P_hpa  = P_station_pa / 100.0f;
+    float Tv     = T_k / (1.0f - (e_hpa / P_hpa) * (1.0f - 0.622f));
+    return P_station_pa * expf(9.80665f * alt_m / (287.058f * Tv));
+}
 
 // ---------------------------------------------------------------------------
 // WMO pressure tendency characteristic (code table 0200)
 // ---------------------------------------------------------------------------
 
-// Minimum half-period pressure change (hPa) to be considered "significant".
-// 0.3 hPa over 1.5 h is a meaningful signal; noise is typically < 0.1 hPa.
-#define TEND_SIG 0.5f
+// Net 3-hour change (hPa) required to leave "Steady" — WMO synoptic standard.
+// Previously 0.5 hPa (twice as sensitive); data showed the code changing on
+// 93% of 10-min publish cycles, confirming that 0.5 was below the noise floor.
+#define TEND_SIG  1.0f
 // Difference between halves required to call a rise/fall "accelerating" or
 // "decelerating" rather than "steady".
-#define TEND_ACC 0.2f
+#define TEND_ACC  0.3f
+// Extra hPa beyond TEND_SIG required to *commit* a direction change.
+// Within this deadband the current direction is held, preventing rapid
+// Rising ↔ Falling oscillation when net hovers near ±TEND_SIG.
+#define TEND_HYST 0.3f
 
 // Derive the WMO `a` code from the current tendency ring buffer.
 // Requires s_tend_count == TENDENCY_HISTORY (called only when tendency_valid).
@@ -100,6 +160,46 @@ static int tendency_a_code(void) {
     if (f >  TEND_SIG && s < -TEND_SIG) return 0; // rose then fell back
     if (f < -TEND_SIG && s >  TEND_SIG) return 5; // fell then rose back
     return 4;                                      // steady throughout
+}
+
+// Wraps tendency_a_code() with direction-level hysteresis.
+//
+// Problem: the midpoint sample (1.5h ago) is a single noisy 10-min mean.
+// An outlier there flips `f` and `s`, making the code jump between e.g.
+// "Rising rapidly" and "Falling rapidly" on consecutive 10-min cycles.
+//
+// Fix: track the committed direction (-1/0/+1) separately.  A direction
+// change only commits when net crosses TEND_SIG ± TEND_HYST (deadband).
+// Within the same direction, subcode updates (e.g. Rising→Rising rapidly)
+// are always accepted so the WMO shape analysis still has meaning.
+static int tendency_a_filtered(float tendency_hpa) {
+    int raw = tendency_a_code();
+
+    // Determine new direction from the continuous net change.
+    int new_dir;
+    if      (tendency_hpa >  TEND_SIG + TEND_HYST) new_dir =  1;  // confirmed rising
+    else if (tendency_hpa < -(TEND_SIG + TEND_HYST)) new_dir = -1; // confirmed falling
+    else if (fabsf(tendency_hpa) <= TEND_SIG - TEND_HYST) new_dir =  0; // confirmed steady
+    else new_dir = s_tend_dir;  // in hysteresis band: hold current direction
+
+    int out;
+    if (new_dir == 0) {
+        out = 4;  // Steady regardless of raw shape analysis
+    } else if (new_dir == s_tend_dir && new_dir != 0) {
+        // Continuing the same direction: accept a subcode update only if the
+        // raw code agrees with the current direction (codes 0-3 = net rising,
+        // codes 5-8 = net falling).  A disagreeing raw code means the ring
+        // net briefly dipped below TEND_SIG — keep the last valid subcode.
+        bool agrees = (new_dir > 0) ? (raw <= 3) : (raw >= 5);
+        out = agrees ? raw : s_last_tend_a;
+    } else {
+        // Direction genuinely changed: commit the new raw code.
+        out = raw;
+    }
+
+    s_tend_dir   = new_dir;
+    s_last_tend_a = out;
+    return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -228,6 +328,11 @@ int main(void) {
     printf("INA219 ready.\r\n");
 
     float qnh_ref_pa = qnh_load();
+    alt_load(&s_alt_est, &s_alt_var);
+    s_saved_alt = s_alt_est;   // seed change-detection from flash
+    s_saved_qnh = qnh_ref_pa;
+    printf("Kalman alt: est=%.1f m  var=%.1f m² (σ=%.1f m)\r\n",
+           s_alt_est, s_alt_var, sqrtf(s_alt_var));
     rtc_init();
 
     // ── Boot WiFi (wipe credentials and reboot on failure) ───────────────────
@@ -268,10 +373,23 @@ int main(void) {
         mqtt_ha_publish_discovery(&mqtt, publish_interval_s + 30);
         mqtt_ha_publish_status(&mqtt, true);
 
-        // GPS fetch — sets initial station altitude
+        // GPS fetch → Kalman altitude update.
+        // Reject altitude below GPS_ALT_MIN_M (2D-only fix / fix-loss → alt≈0).
         float gps_alt;
         bool gps_ok = mqtt_ha_fetch_gps_altitude(&mqtt, &gps_alt);
-        if (gps_ok) s_station_alt = gps_alt;
+        if (gps_ok && gps_alt >= GPS_ALT_MIN_M) {
+            // 1D Kalman update: predict (add tiny process noise) then correct.
+            s_alt_var += GPS_ALT_Q;
+            float K    = s_alt_var / (s_alt_var + GPS_ALT_R);
+            s_alt_est += K * (gps_alt - s_alt_est);
+            s_alt_var  = (1.0f - K) * s_alt_var;
+            printf("GPS alt %.1f m → Kalman: est=%.1f m  σ=%.1f m\r\n",
+                   gps_alt, s_alt_est, sqrtf(s_alt_var));
+        } else if (gps_ok) {
+            printf("GPS alt %.1f m below minimum (%.0f m) — ignored, Kalman est=%.1f m\r\n",
+                   gps_alt, GPS_ALT_MIN_M, s_alt_est);
+            gps_ok = false;
+        }
 
         // Single boot reading (not a 10-min average — cold-start snapshot)
         bme_sensor.settings->mode = 0b01;
@@ -280,12 +398,17 @@ int main(void) {
 
         float bmp_temp_c   = (float)bmp_sensor.measurement_params->T / 10.0f;
         float bmp_press_pa = (float)bmp_sensor.measurement_params->p;
-        bmp180_compute_sea_pressure(&bmp_sensor, s_station_alt);
+        bmp180_compute_sea_pressure(&bmp_sensor, s_alt_est);
         float bmp_press_msl_pa = bmp_sensor.measurement_params->p_relative;
         if (gps_ok) {
             qnh_ref_pa = QNH_EMA_ALPHA * bmp_press_msl_pa +
                          (1.0f - QNH_EMA_ALPHA) * qnh_ref_pa;
-            qnh_save(qnh_ref_pa);
+            if (fabsf(s_alt_est - s_saved_alt) > 0.5f ||
+                fabsf(qnh_ref_pa - s_saved_qnh) > 10.0f) {
+                params_save(qnh_ref_pa, s_alt_est, s_alt_var);
+                s_saved_alt = s_alt_est;
+                s_saved_qnh = qnh_ref_pa;
+            }
         }
         bmp180_compute_altitude(&bmp_sensor, qnh_ref_pa);
         float bmp_alt_m = bmp_sensor.measurement_params->altitude;
@@ -300,10 +423,17 @@ int main(void) {
         float bme_temp_c       = (float)bme_sensor.measure->T / 100.0f;
         float bme_press_pa     = (float)bme_sensor.measure->P / 256.0f;
         float bme_press_msl_pa = bme_press_pa /
-                                 powf(1.0f - (s_station_alt / 44330.0f), 5.255f);
+                                 powf(1.0f - (s_alt_est / 44330.0f), 5.255f);
         float bme_alt_m        = 44330.0f *
                                  (1.0f - powf(bme_press_pa / qnh_ref_pa, 1.0f / 5.255f));
         float bme_hum_pct      = (float)bme_sensor.measure->H / 1024.0f;
+
+        // WMO hypsometric+Tv corrected MSL.  Both sensors use BME280 T+RH
+        // for the virtual temperature (BME280 has better T accuracy than BMP180).
+        float bmp_press_msl_vt_pa = msl_virtual_temp(bmp_press_pa, s_alt_est,
+                                                      bme_temp_c, bme_hum_pct);
+        float bme_press_msl_vt_pa = msl_virtual_temp(bme_press_pa, s_alt_est,
+                                                      bme_temp_c, bme_hum_pct);
 
         ina219_reading_t ups = {0};
         bool ups_ok = ina219_read(&ups);
@@ -321,11 +451,11 @@ int main(void) {
         sensor_state_t state = {
             .bmp180_temp_c          = bmp_temp_c,
             .bmp180_pressure_pa     = bmp_press_pa,
-            .bmp180_pressure_msl_pa = bmp_press_msl_pa,
+            .bmp180_pressure_msl_pa = bmp_press_msl_vt_pa,  // WMO Tv-corrected
             .bmp180_altitude_m      = bmp_alt_m,
             .bme280_temp_c          = bme_temp_c,
             .bme280_pressure_pa     = bme_press_pa,
-            .bme280_pressure_msl_pa = bme_press_msl_pa,
+            .bme280_pressure_msl_pa = bme_press_msl_vt_pa,  // WMO Tv-corrected
             .bme280_altitude_m      = bme_alt_m,
             .bme280_humidity_pct    = bme_hum_pct,
             .battery_pct    = ups_ok ? ups.percent    : -1,
@@ -333,6 +463,7 @@ int main(void) {
             .current_ma     = ups_ok ? ups.current_ma : 0.0f,
             .tendency_a     = 0,
             .tendency_valid = false,   // no history on boot
+            .station_alt_m  = s_alt_est,
         };
         mqtt_ha_publish_state(&mqtt, &state);
         sleep_ms(100);
@@ -353,7 +484,7 @@ int main(void) {
 
         float bmp_temp_c   = (float)bmp_sensor.measurement_params->T / 10.0f;
         float bmp_press_pa = (float)bmp_sensor.measurement_params->p;
-        bmp180_compute_sea_pressure(&bmp_sensor, s_station_alt);
+        bmp180_compute_sea_pressure(&bmp_sensor, s_alt_est);
         float bmp_press_msl_pa = bmp_sensor.measurement_params->p_relative;
 
         if (bme280_get_uncompensated_measurements(&bme_sensor) != BME280_OK)
@@ -366,7 +497,7 @@ int main(void) {
         float bme_temp_c       = (float)bme_sensor.measure->T / 100.0f;
         float bme_press_pa     = (float)bme_sensor.measure->P / 256.0f;
         float bme_press_msl_pa = bme_press_pa /
-                                 powf(1.0f - (s_station_alt / 44330.0f), 5.255f);
+                                 powf(1.0f - (s_alt_est / 44330.0f), 5.255f);
         float bme_hum_pct      = (float)bme_sensor.measure->H / 1024.0f;
 
         ina219_reading_t ups = {0};
@@ -387,10 +518,8 @@ int main(void) {
             s_ups_ok_count++;
         }
         s_hires[s_sample_count] = (press_hires_t){
-            .bmp_pa     = bmp_press_pa     / 100.0f,
-            .bmp_msl_pa = bmp_press_msl_pa / 100.0f,
-            .bme_pa     = bme_press_pa     / 100.0f,
-            .bme_msl_pa = bme_press_msl_pa / 100.0f,
+            .bmp_pa = bmp_press_pa / 100.0f,
+            .bme_pa = bme_press_pa / 100.0f,
         };
         s_sample_count++;
 
@@ -403,19 +532,25 @@ int main(void) {
         float bme_temp_mean = s_bme_temp_sum / n;
         float bme_hum_mean  = s_bme_hum_sum  / n;
 
-        // Most recent 1-min pressure sample used for state topic and altitude
-        float bmp_press_pa_last     = s_hires[SAMPLES_PER_PUBLISH - 1].bmp_pa     * 100.0f;
-        float bmp_press_msl_pa_last = s_hires[SAMPLES_PER_PUBLISH - 1].bmp_msl_pa * 100.0f;
-        float bme_press_pa_last     = s_hires[SAMPLES_PER_PUBLISH - 1].bme_pa     * 100.0f;
-        float bme_press_msl_pa_last = s_hires[SAMPLES_PER_PUBLISH - 1].bme_msl_pa * 100.0f;
+        // Most recent 1-min pressure sample (QFE) used for state topic.
+        // Convert to MSL (QNH) using the current Kalman altitude estimate.
+        // All 10 hires samples share the same altitude reference since GPS is
+        // not yet fetched at this point in the cycle.
+        float bmp_press_pa_last = s_hires[SAMPLES_PER_PUBLISH - 1].bmp_pa * 100.0f;
+        float bme_press_pa_last = s_hires[SAMPLES_PER_PUBLISH - 1].bme_pa * 100.0f;
+
+        float alt_factor            = powf(1.0f - (s_alt_est / 44330.0f), 5.255f);
+        float bmp_press_msl_pa_last = bmp_press_pa_last / alt_factor;
+        float bme_press_msl_pa_last = bme_press_pa_last / alt_factor;
 
         // 10-min mean MSL pressure for tendency (WMO: use averaged pressure).
         // BME280 is used — it has factory temperature compensation which gives
         // more accurate pressure readings than the BMP180.
         float bme_msl_mean_hpa = 0.0f;
         for (int i = 0; i < SAMPLES_PER_PUBLISH; i++)
-            bme_msl_mean_hpa += s_hires[i].bme_msl_pa;
+            bme_msl_mean_hpa += s_hires[i].bme_pa;
         bme_msl_mean_hpa /= n;
+        bme_msl_mean_hpa /= alt_factor;
 
         // Push 10-min mean into 3-hour tendency ring buffer
         s_tend_buf[s_tend_write] = bme_msl_mean_hpa;
@@ -430,7 +565,7 @@ int main(void) {
             float newest = s_tend_buf[(s_tend_write - 1 + TENDENCY_HISTORY) % TENDENCY_HISTORY];
             float oldest = s_tend_buf[s_tend_write];
             tendency_hpa = newest - oldest;
-            tendency_a   = tendency_a_code();
+            tendency_a   = tendency_a_filtered(tendency_hpa);
         }
 
         // INA219 10-min averages
@@ -444,6 +579,8 @@ int main(void) {
             // Invalidate tendency window — we've lost a slot in the timeline
             s_tend_count = 0;
             s_tend_write = 0;
+            s_tend_dir   = 0;
+            s_last_tend_a = 4;
             reset_accumulators();
             continue;
         }
@@ -469,20 +606,39 @@ int main(void) {
             cyw43_arch_deinit();
             s_tend_count = 0;
             s_tend_write = 0;
+            s_tend_dir   = 0;
+            s_last_tend_a = 4;
             reset_accumulators();
             continue;
         }
         mqtt_ha_publish_status(&mqtt, true);
 
-        // ── GPS fetch → update station alt and QNH ────────────────────────────
+        // ── GPS fetch → Kalman altitude update + QNH ─────────────────────────
+        // Reject altitude below GPS_ALT_MIN_M (2D-only fix / fix-loss → alt≈0).
         float gps_alt;
         bool gps_ok = mqtt_ha_fetch_gps_altitude(&mqtt, &gps_alt);
+        if (gps_ok && gps_alt < GPS_ALT_MIN_M) {
+            printf("GPS alt %.1f m below minimum (%.0f m) — ignored, Kalman est=%.1f m\r\n",
+                   gps_alt, GPS_ALT_MIN_M, s_alt_est);
+            gps_ok = false;
+        }
         if (gps_ok) {
-            s_station_alt = gps_alt;
+            // 1D Kalman update: predict (add tiny process noise) then correct.
+            s_alt_var += GPS_ALT_Q;
+            float K    = s_alt_var / (s_alt_var + GPS_ALT_R);
+            s_alt_est += K * (gps_alt - s_alt_est);
+            s_alt_var  = (1.0f - K) * s_alt_var;
+            printf("GPS alt %.1f m → Kalman: est=%.1f m  σ=%.1f m\r\n",
+                   gps_alt, s_alt_est, sqrtf(s_alt_var));
             // Update QNH EMA using 10-min mean MSL pressure (more stable than single sample)
             qnh_ref_pa = QNH_EMA_ALPHA * (bme_msl_mean_hpa * 100.0f) +
                          (1.0f - QNH_EMA_ALPHA) * qnh_ref_pa;
-            qnh_save(qnh_ref_pa);
+            if (fabsf(s_alt_est - s_saved_alt) > 0.5f ||
+                fabsf(qnh_ref_pa - s_saved_qnh) > 10.0f) {
+                params_save(qnh_ref_pa, s_alt_est, s_alt_var);
+                s_saved_alt = s_alt_est;
+                s_saved_qnh = qnh_ref_pa;
+            }
         }
 
         // Altitude from last pressure sample + current QNH
@@ -491,11 +647,20 @@ int main(void) {
         float bme_alt_m = 44330.0f *
                           (1.0f - powf(bme_press_pa_last / qnh_ref_pa, 1.0f / 5.255f));
 
-        printf("Publish — BMP180 mean: T=%.1fC  QNH=%.2fhPa  Alt=%.1fm%s\r\n",
-               bmp_temp_mean, bmp_press_msl_pa_last / 100.0f, bmp_alt_m,
-               gps_ok ? "" : "  [GPS fallback]");
+        // WMO hypsometric+Tv corrected MSL.  Use 10-min mean T and RH for
+        // the virtual temperature (more stable than last-sample-only).
+        // Both sensors use BME280 T+RH (better accuracy than BMP180 T).
+        float bmp_press_msl_vt_pa = msl_virtual_temp(bmp_press_pa_last, s_alt_est,
+                                                      bme_temp_mean, bme_hum_mean);
+        float bme_press_msl_vt_pa = msl_virtual_temp(bme_press_pa_last, s_alt_est,
+                                                      bme_temp_mean, bme_hum_mean);
+
+        printf("Publish — BMP180 mean: T=%.1fC  QNH=%.2fhPa  Alt=%.1fm\r\n",
+               bmp_temp_mean, bmp_press_msl_pa_last / 100.0f, bmp_alt_m);
         printf("          BME280 mean: T=%.1fC  H=%.1f%%  UPS: %d%% %.2fV %.0fmA\r\n",
                bme_temp_mean, bme_hum_mean, batt_mean, volt_mean, curr_mean);
+        printf("          Kalman alt: %.1f m  σ=%.1f m%s\r\n",
+               s_alt_est, sqrtf(s_alt_var), gps_ok ? "" : "  [GPS hold]");
         if (tendency_valid)
             printf("          Tendency (3h): %+.1f hPa/3h  a=%d\r\n",
                    tendency_hpa, tendency_a);
@@ -510,11 +675,11 @@ int main(void) {
         sensor_state_t state = {
             .bmp180_temp_c          = bmp_temp_mean,
             .bmp180_pressure_pa     = bmp_press_pa_last,
-            .bmp180_pressure_msl_pa = bmp_press_msl_pa_last,
+            .bmp180_pressure_msl_pa = bmp_press_msl_vt_pa,  // WMO Tv-corrected
             .bmp180_altitude_m      = bmp_alt_m,
             .bme280_temp_c          = bme_temp_mean,
             .bme280_pressure_pa     = bme_press_pa_last,
-            .bme280_pressure_msl_pa = bme_press_msl_pa_last,
+            .bme280_pressure_msl_pa = bme_press_msl_vt_pa,  // WMO Tv-corrected
             .bme280_altitude_m      = bme_alt_m,
             .bme280_humidity_pct    = bme_hum_mean,
             .battery_pct            = batt_mean,
@@ -523,6 +688,7 @@ int main(void) {
             .bme280_tendency_hpa    = tendency_hpa,
             .tendency_a             = tendency_a,
             .tendency_valid         = tendency_valid,
+            .station_alt_m          = s_alt_est,
         };
         mqtt_ha_publish_state(&mqtt, &state);
         sleep_ms(100);
