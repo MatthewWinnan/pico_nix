@@ -91,6 +91,14 @@ fetch-datasheets:
     test -f docs/datasheets/ssd1306-datasheet.pdf || \
         curl -fL -o docs/datasheets/ssd1306-datasheet.pdf \
             https://cdn-shop.adafruit.com/datasheets/SSD1306.pdf
+    # BMP581 pressure sensor (planned replacement for BMP180; capacitive MEMS, ±0.3 hPa, 0.08 Pa noise)
+    test -f docs/datasheets/bmp581-datasheet.pdf || \
+        curl -fL -o docs/datasheets/bmp581-datasheet.pdf \
+            https://www.bosch-sensortec.com/media/boschsensortec/downloads/datasheets/bst-bmp581-ds004.pdf
+    # DS3231 RTC (planned for dormant-mode wakeup; battery-backed, ±2 ppm, I2C)
+    test -f docs/datasheets/ds3231-datasheet.pdf || \
+        curl -fL -o docs/datasheets/ds3231-datasheet.pdf \
+            https://www.analog.com/media/en/technical-documentation/data-sheets/ds3231.pdf
     @echo "Datasheets up to date in docs/datasheets/"
 
 # Download all the standards I want to follow
