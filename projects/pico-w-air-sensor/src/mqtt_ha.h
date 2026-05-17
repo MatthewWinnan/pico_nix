@@ -26,8 +26,12 @@ typedef struct {
     float pm2_5_1h;
     float pm10_1h;
     bool  hourly_valid;
-    // WHO AQI category derived from 1-min PM2.5 (always valid)
-    const char *aqi;  // "Good" / "Fair" / "Moderate" / "Poor" / "Very poor"
+    // EPA NowCast PM2.5 (weighted 12-hour mean) — valid once ≥2 hourly
+    // snapshots exist (≥2 h uptime).  Omitted from JSON until nowcast_valid.
+    float nowcast_pm2_5;
+    bool  nowcast_valid;
+    // WHO AQI category derived from NowCast PM2.5 — "Unknown" until valid.
+    const char *aqi;  // "Good" / "Fair" / "Moderate" / "Poor" / "Very poor" / "Unknown"
 } air_state_t;
 
 // Initialise, connect, and wait until connected (or timeout).

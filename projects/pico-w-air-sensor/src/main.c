@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <float.h>
 #include "pico/stdlib.h"
 #include "pico/cyw43_arch.h"
 #include "hardware/watchdog.h"
@@ -18,6 +19,11 @@
 
 // Ring buffer depth for 1-hour rolling means (60 × 1-min = 60 min).
 #define HOURLY_SAMPLES    60
+
+// NowCast window: up to 12 hourly snapshots (EPA NowCast PM algorithm).
+// One snapshot is pushed every HOURLY_SAMPLES publishes.
+// AQI is valid once ≥2 hourly snapshots exist (≥2 h uptime).
+#define NOWCAST_HOURS     12
 
 // ---------------------------------------------------------------------------
 // Display helpers — no-op when USB is not connected (field/battery mode).
@@ -40,11 +46,77 @@ static int   s_hour_count = 0;  // entries filled so far (caps at HOURLY_SAMPLES
 static int   s_hour_write = 0;  // next write index
 
 // ---------------------------------------------------------------------------
-// WHO AQI category from 1-min PM2.5 mean (µg/m³)
-// Breakpoints from WHO Air Quality Guidelines 2021.
-// Hysteresis: a category change only commits when PM2.5 has crossed the
-// boundary by AQI_HYST µg/m³.  This prevents rapid flipping when the
-// 1-min mean oscillates around a boundary (observed at ~103 s median period).
+// EPA NowCast ring buffer — one hourly snapshot per HOURLY_SAMPLES publishes.
+// Valid once s_nowcast_count >= 2 (EPA requires ≥2 of most recent 3 hours).
+// ---------------------------------------------------------------------------
+
+static float s_nowcast_pm25[NOWCAST_HOURS];
+static float s_nowcast_pm10[NOWCAST_HOURS];
+static int   s_nowcast_count    = 0;  // entries filled (caps at NOWCAST_HOURS)
+static int   s_nowcast_write    = 0;  // next write index
+static int   s_mins_this_hour   = 0;  // 1-min publishes since last hourly push
+
+// ---------------------------------------------------------------------------
+// EPA NowCast weighted mean for PM2.5 / PM10.
+//
+// References:
+//   EPA Technical Assistance Document for AQI Reporting (2018 / 2024):
+//     EPA-454/B-18-007  §  NowCast algorithm for PM
+//     https://www.airnow.gov/sites/default/files/2020-05/aqi-technical-assistance-document-sept2018.pdf
+//   Wikipedia summary with pseudocode:
+//     https://en.wikipedia.org/wiki/NowCast_(air_quality_index)
+//
+// Algorithm:
+//   1. Collect up to NOWCAST_HOURS hourly averages (most recent first).
+//   2. w = Cmin / Cmax over the window, clamped to [0.5, 1].
+//      High variability → small w → weights decay fast → recent hours dominate.
+//      Stable conditions  → w ≈ 1  → all hours weighted roughly equally.
+//      If Cmax = 0 (pristine air) w defaults to 1 (equal weighting).
+//   3. Hour i (0 = most recent) gets weight w^i.
+//   4. NowCast = Σ(Ci × w^i) / Σ(w^i).
+//   5. Valid when ≥2 of the 3 most recent hourly values are present.
+//      For a continuously running sensor this simplifies to count ≥ 2.
+//
+// Returns the NowCast concentration, or -1 if count < 2 (not enough data).
+// ---------------------------------------------------------------------------
+
+static float nowcast_compute(const float *buf, int count, int write_head) {
+    if (count < 2) return -1.0f;
+
+    float cmin = FLT_MAX, cmax = 0.0f;
+    for (int i = 0; i < count; i++) {
+        if (buf[i] < cmin) cmin = buf[i];
+        if (buf[i] > cmax) cmax = buf[i];
+    }
+
+    float w = (cmax > 0.0f) ? (cmin / cmax) : 1.0f;
+    if (w < 0.5f) w = 0.5f;
+
+    float num = 0.0f, den = 0.0f, wi = 1.0f;
+    for (int i = 0; i < count; i++) {
+        int idx = (write_head - 1 - i + NOWCAST_HOURS) % NOWCAST_HOURS;
+        num += buf[idx] * wi;
+        den += wi;
+        wi  *= w;
+    }
+    return num / den;
+}
+
+// ---------------------------------------------------------------------------
+// WHO AQI category derived from NowCast PM2.5 (µg/m³).
+//
+// Breakpoints from WHO Air Quality Guidelines 2021 (Table 1, PM2.5):
+//   WHO AQG Level (24-h mean): 15 µg/m³
+//   Interim targets: IT-1 = 35, IT-2 = 25, IT-3 = 15
+//   Reference: WHO Global Air Quality Guidelines (2021), ISBN 978-92-4-003422-8
+//     https://www.who.int/publications/i/item/9789240034228
+//
+// Category band boundaries used here (µg/m³):
+//   Good < 5 ≤ Fair < 15 ≤ Moderate < 25 ≤ Poor < 50 ≤ Very poor
+//
+// Hysteresis (AQI_HYST): a category change only commits when PM2.5 has
+// crossed the boundary by a full AQI_HYST margin, preventing rapid flipping
+// when the value oscillates around a boundary.
 // ---------------------------------------------------------------------------
 
 // Deadband half-width at each category boundary (µg/m³).
@@ -283,7 +355,7 @@ int main(void) {
             s_hour_write = (s_hour_write + 1) % HOURLY_SAMPLES;
             if (s_hour_count < HOURLY_SAMPLES) s_hour_count++;
 
-            // Compute 1-hour means once the buffer is full
+            // Compute 1-hour rolling means once the buffer is full
             float pm25_1h = 0.0f, pm10_1h = 0.0f;
             bool  hourly_valid = (s_hour_count == HOURLY_SAMPLES);
             if (hourly_valid) {
@@ -295,6 +367,25 @@ int main(void) {
                 pm10_1h /= HOURLY_SAMPLES;
             }
 
+            // Push an hourly snapshot to the NowCast buffer every HOURLY_SAMPLES
+            // publishes.  The first push occurs at minute 60 (same point that
+            // hourly_valid first becomes true), so pm25_1h is always valid here.
+            s_mins_this_hour++;
+            if (s_mins_this_hour >= HOURLY_SAMPLES && hourly_valid) {
+                s_mins_this_hour = 0;
+                s_nowcast_pm25[s_nowcast_write] = pm25_1h;
+                s_nowcast_pm10[s_nowcast_write] = pm10_1h;
+                s_nowcast_write = (s_nowcast_write + 1) % NOWCAST_HOURS;
+                if (s_nowcast_count < NOWCAST_HOURS) s_nowcast_count++;
+            }
+
+            // NowCast PM2.5 and derived AQI category.
+            // Valid after ≥2 hourly snapshots (≥2 h uptime).
+            float nowcast_val   = nowcast_compute(s_nowcast_pm25,
+                                                  s_nowcast_count,
+                                                  s_nowcast_write);
+            bool  nowcast_valid = (nowcast_val >= 0.0f);
+
             air_state_t state = {
                 .pm1_0   = (uint16_t)(acc_pm10    / PUBLISH_INTERVAL),
                 .pm2_5   = (uint16_t)(pm25_mean + 0.5f),
@@ -305,10 +396,12 @@ int main(void) {
                 .cnt_25  = (uint16_t)(acc_cnt_25  / PUBLISH_INTERVAL),
                 .cnt_50  = (uint16_t)(acc_cnt_50  / PUBLISH_INTERVAL),
                 .cnt_100 = (uint16_t)(acc_cnt_100 / PUBLISH_INTERVAL),
-                .pm2_5_1h    = pm25_1h,
-                .pm10_1h     = pm10_1h,
+                .pm2_5_1h     = pm25_1h,
+                .pm10_1h      = pm10_1h,
                 .hourly_valid = hourly_valid,
-                .aqi         = aqi_category(pm25_mean),
+                .nowcast_pm2_5 = nowcast_val,
+                .nowcast_valid = nowcast_valid,
+                .aqi           = nowcast_valid ? aqi_category(nowcast_val) : "Unknown",
             };
             mqtt_ha_publish_state(&mqtt, &state);
 

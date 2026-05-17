@@ -191,7 +191,11 @@ void mqtt_ha_publish_discovery(mqtt_ha_t *ctx) {
     PD("air_pm10_1h",  "PM10 (1 h mean)",  "pm10", "\xc2\xb5g/m\xc2\xb3",
        "{{ value_json.pm10_1h | default(None) }}");
 
-    // ── WHO AQI category (derived from 1-min PM2.5) ───────────────────────────
+    // ── EPA NowCast (unknown until 2 h of data) ───────────────────────────────
+    PD("air_nowcast", "PM2.5 NowCast", "pm25", "\xc2\xb5g/m\xc2\xb3",
+       "{{ value_json.nowcast_pm2_5 | default(None) }}");
+
+    // ── WHO AQI category (derived from NowCast PM2.5, unknown until 2 h) ─────
     PD("air_aqi", "Air Quality (WHO)", NULL, "",
        "{{ value_json.aqi }}");
 
@@ -213,7 +217,7 @@ void mqtt_ha_publish_discovery(mqtt_ha_t *ctx) {
 }
 
 void mqtt_ha_publish_state(mqtt_ha_t *ctx, const air_state_t *s) {
-    // Build optional hourly mean fields — omit until valid so HA shows unknown.
+    // Optional fields — omit until valid so HA shows "unknown".
     char hourly[64] = "";
     if (s->hourly_valid) {
         snprintf(hourly, sizeof(hourly),
@@ -221,17 +225,23 @@ void mqtt_ha_publish_state(mqtt_ha_t *ctx, const air_state_t *s) {
                  s->pm2_5_1h, s->pm10_1h);
     }
 
-    char payload[320];
+    char nowcast[32] = "";
+    if (s->nowcast_valid) {
+        snprintf(nowcast, sizeof(nowcast),
+                 ",\"nowcast_pm2_5\":%.1f", s->nowcast_pm2_5);
+    }
+
+    char payload[384];
     snprintf(payload, sizeof(payload),
              "{"
              "\"pm1_0\":%u,\"pm2_5\":%u,\"pm10\":%u,"
              "\"aqi\":\"%s\""
-             "%s,"
+             "%s%s,"
              "\"cnt_03\":%u,\"cnt_05\":%u,\"cnt_10\":%u,"
              "\"cnt_25\":%u,\"cnt_50\":%u,\"cnt_100\":%u"
              "}",
              s->pm1_0, s->pm2_5, s->pm10,
-             s->aqi, hourly,
+             s->aqi, hourly, nowcast,
              s->cnt_03, s->cnt_05, s->cnt_10,
              s->cnt_25, s->cnt_50, s->cnt_100);
 
